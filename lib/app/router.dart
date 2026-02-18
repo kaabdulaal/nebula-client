@@ -8,8 +8,10 @@ import '../features/onboarding/setup_screen.dart';
 import '../features/onboarding/seed_screen.dart';
 import '../features/onboarding/seed_verification_screen.dart';
 import '../features/onboarding/restore_wallet_screen.dart';
+import '../features/onboarding/cartridge_setup_screen.dart';
 import '../features/explorer/explorer_screen.dart';
 import '../features/telegram/telegram_test_screen.dart';
+import '../features/settings/screens/api_settings_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -32,6 +34,10 @@ final router = GoRouter(
     ),
     GoRoute(
       path: '/auth',
+      builder: (context, state) => const AuthScreen(),
+    ),
+    GoRoute(
+      path: '/master_pass', // Alias for /auth to match setup flow
       builder: (context, state) => const AuthScreen(),
     ),
     GoRoute(
@@ -61,6 +67,14 @@ final router = GoRouter(
     GoRoute(
       path: '/telegram_test',
       builder: (context, state) => const TelegramTestScreen(),
+    ),
+    GoRoute(
+      path: '/cartridge_setup',
+      builder: (context, state) => const CartridgeSetupScreen(),
+    ),
+    GoRoute(
+      path: '/api_settings',
+      builder: (context, state) => const ApiSettingsScreen(),
     ),
   ],
 );

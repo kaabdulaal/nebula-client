@@ -7,7 +7,8 @@ class RestoreWalletScreen extends ConsumerStatefulWidget {
   const RestoreWalletScreen({super.key});
 
   @override
-  ConsumerState<RestoreWalletScreen> createState() => _RestoreWalletScreenState();
+  ConsumerState<RestoreWalletScreen> createState() =>
+      _RestoreWalletScreenState();
 }
 
 class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
@@ -53,7 +54,8 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
     try {
       print('🚀 [Recovery] Validating Mnemonic...');
       if (!NebulaApi.instance.validateMnemonic(mnemonic)) {
-        setState(() => _error = 'Invalid recovery phrase. Please check the words and order.');
+        setState(() => _error =
+            'Invalid recovery phrase. Please check the words and order.');
         return;
       }
 
@@ -63,7 +65,7 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
 
       // After recovery, the DB is initialized with the Master Key.
       // We don't need to call init() again if g_initialized is true on native side.
-      
+
       if (mounted) {
         context.go('/home');
       }

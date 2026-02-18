@@ -23,10 +23,10 @@ class NebulaApp extends ConsumerWidget {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
     await windowManager.ensureInitialized();
-    
+
     const WindowOptions windowOptions = WindowOptions(
       size: Size(400, 800),
       minimumSize: Size(400, 600),
@@ -36,13 +36,13 @@ Future<void> main() async {
       titleBarStyle: TitleBarStyle.normal,
       title: 'Nebula',
     );
-    
+
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
       await windowManager.show();
       await windowManager.focus();
     });
   }
-  
+
   runApp(
     const ProviderScope(
       child: NebulaApp(),

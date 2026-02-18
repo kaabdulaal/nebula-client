@@ -29,7 +29,8 @@ class WelcomeScreen extends StatelessWidget {
                     ),
                   ],
                 ),
-                child: const Icon(Icons.rocket_launch, size: 60, color: Colors.white),
+                child: const Icon(Icons.rocket_launch,
+                    size: 60, color: Colors.white),
               ),
               const SizedBox(height: 48),
               Text(
@@ -57,7 +58,8 @@ class WelcomeScreen extends StatelessWidget {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF0088CC),
                     foregroundColor: Colors.white,
-                    textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    textStyle: const TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.bold),
                   ),
                 ),
               ),

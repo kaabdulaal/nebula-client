@@ -19,15 +19,13 @@ Future<Directory> getNebulaDocumentsDirectory() async {
     try {
       return await getApplicationDocumentsDirectory();
     } catch (e) {
-      _NebulaLogger.d('path_provider failed, using XDG fallback: $e');
       final home = Platform.environment['HOME'] ?? '.';
-      final dataHome = Platform.environment['XDG_DATA_HOME'] ?? p.join(home, '.local', 'share');
-      final nebulaDir = Directory(p.join(dataHome, 'nebula_vault'));
-      
+      final nebulaDir = Directory(p.join(home, '.local', 'share', 'nebula'));
+
       if (!await nebulaDir.exists()) {
         await nebulaDir.create(recursive: true);
       }
-      
+
       return nebulaDir;
     }
   } else {
@@ -47,7 +45,7 @@ class NebulaError implements Exception {
 
 class NebulaApi {
   static final NebulaApi _instance = NebulaApi._internal();
-  
+
   factory NebulaApi() => _instance;
 
   NebulaApi._internal() {
@@ -65,7 +63,7 @@ class NebulaApi {
 
   ffi.DynamicLibrary _loadLibrary() {
     const libName = 'libnebula_core';
-    
+
     if (Platform.isAndroid) {
       try {
         return ffi.DynamicLibrary.open('libnebula_core.so');
@@ -109,17 +107,18 @@ class NebulaApi {
 
     final dbPathPtr = dbPath.toNativeUtf8();
     final passwordPtr = password.toNativeUtf8();
-    
+
     try {
       final result = _bindings.nebula_init(
         dbPathPtr.cast<ffi.Char>(),
         passwordPtr.cast<ffi.Char>(),
       );
-      
+
       if (result != 0) {
-        throw NebulaError(result, 'Failed to initialize Nebula Core (Code: $result)');
+        throw NebulaError(
+            result, 'Failed to initialize Nebula Core (Code: $result)');
       }
-      
+
       _isInitialized = true;
     } catch (e) {
       _NebulaLogger.d('FFI Exception: $e');
@@ -185,7 +184,7 @@ class NebulaApi {
 
   int sendTelegramCode(String phone) {
     _ensureInitialized();
-    
+
     final phonePtr = phone.toNativeUtf8();
     try {
       return _bindings.telegram_send_code(phonePtr.cast<ffi.Char>());
@@ -196,7 +195,7 @@ class NebulaApi {
 
   int checkTelegramCode(String code) {
     _ensureInitialized();
-    
+
     final codePtr = code.toNativeUtf8();
     try {
       return _bindings.telegram_check_code(codePtr.cast<ffi.Char>());
@@ -208,7 +207,7 @@ class NebulaApi {
   String generateMnemonic() {
     const bufferSize = 256; // Enough for 12 words + spaces
     final buffer = calloc<ffi.Char>(bufferSize);
-    
+
     try {
       final result = _bindings.nebula_generate_mnemonic(buffer, bufferSize);
       if (result != 0) {
@@ -245,7 +244,8 @@ class NebulaApi {
   bool validateMnemonic(String mnemonic) {
     final mnemonicPtr = mnemonic.toNativeUtf8();
     try {
-      final result = _bindings.nebula_validate_mnemonic(mnemonicPtr.cast<ffi.Char>());
+      final result =
+          _bindings.nebula_validate_mnemonic(mnemonicPtr.cast<ffi.Char>());
       return result == 1;
     } finally {
       calloc.free(mnemonicPtr);
@@ -278,7 +278,7 @@ class NebulaApi {
 
   List<int>? encryptChunk(List<int> input, List<int> key, List<int> iv) {
     _ensureInitialized();
-    
+
     if (iv.length != 12) throw ArgumentError('IV must be exactly 12 bytes');
     if (key.length != 32) throw ArgumentError('Key must be exactly 32 bytes');
 
@@ -293,7 +293,12 @@ class NebulaApi {
       for (int i = 0; i < key.length; i++) keyPtr[i] = key[i];
 
       final resultLen = _bindings.aes_encrypt_chunk(
-        inputPtr, input.length, outputPtr, keyPtr, key.length, ivPtr,
+        inputPtr,
+        input.length,
+        outputPtr,
+        keyPtr,
+        key.length,
+        ivPtr,
       );
 
       if (resultLen < 0) return null;
@@ -309,7 +314,7 @@ class NebulaApi {
 
   List<int>? decryptChunk(List<int> input, List<int> key, List<int> iv) {
     _ensureInitialized();
-    
+
     if (iv.length != 12) throw ArgumentError('IV must be exactly 12 bytes');
     if (key.length != 32) throw ArgumentError('Key must be exactly 32 bytes');
     if (input.length < 16) throw ArgumentError('Input too short');
@@ -325,7 +330,12 @@ class NebulaApi {
       for (int i = 0; i < key.length; i++) keyPtr[i] = key[i];
 
       final resultLen = _bindings.aes_decrypt_chunk(
-        inputPtr, input.length, outputPtr, keyPtr, key.length, ivPtr,
+        inputPtr,
+        input.length,
+        outputPtr,
+        keyPtr,
+        key.length,
+        ivPtr,
       );
 
       if (resultLen < 0) return null;

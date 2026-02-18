@@ -31,13 +31,14 @@ class _SeedScreenState extends ConsumerState<SeedScreen> {
     try {
       // Add timeout to prevent infinite loading if FFI hangs
       final mnemonicString = await Future.microtask(() {
-         return NebulaApi.instance.generateMnemonic();
+        return NebulaApi.instance.generateMnemonic();
       }).timeout(const Duration(seconds: 5), onTimeout: () {
-         throw TimeoutException('Core took too long to generate seed');
+        throw TimeoutException('Core took too long to generate seed');
       });
 
-      final list = mnemonicString.split(' ').where((w) => w.isNotEmpty).toList();
-      
+      final list =
+          mnemonicString.split(' ').where((w) => w.isNotEmpty).toList();
+
       if (mounted) {
         ref.read(onboardingSeedProvider.notifier).state = list;
       }
@@ -45,14 +46,14 @@ class _SeedScreenState extends ConsumerState<SeedScreen> {
       if (mounted) {
         // Show error and maybe a retry button logic could be added here
         ScaffoldMessenger.of(context).showSnackBar(
-           SnackBar(
-             content: Text('Failed to generate seed: $e'),
-             duration: const Duration(seconds: 5),
-             action: SnackBarAction(
-               label: 'Retry', 
-               onPressed: _generateNativeSeed,
-             ),
-           ),
+          SnackBar(
+            content: Text('Failed to generate seed: $e'),
+            duration: const Duration(seconds: 5),
+            action: SnackBarAction(
+              label: 'Retry',
+              onPressed: _generateNativeSeed,
+            ),
+          ),
         );
       }
     }

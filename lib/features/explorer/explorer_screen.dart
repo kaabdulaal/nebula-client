@@ -31,11 +31,11 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
     }
 
     setState(() => _isLoading = true);
-    
+
     try {
       // Simulate FFI call or use real one
       await Future.delayed(const Duration(milliseconds: 500));
-      
+
       if (mounted) {
         setState(() {
           _files = []; // Empty for now until we have real file listing
@@ -64,15 +64,22 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
           IconButton(
             icon: const Icon(Icons.logout),
             onPressed: () {
-               // Cleanup and logout
+               // Lock vault and logout
                NebulaApi.instance.cleanup();
-               context.go('/');
+               // Navigate to Login screen specifically, not Splash/Welcome
+               context.go('/login');
             },
           ),
           IconButton(
             icon: const Icon(Icons.bug_report),
             onPressed: () {
-               context.push('/telegram_test');
+              context.push('/telegram_test');
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () {
+              context.push('/api_settings');
             },
           ),
         ],
@@ -84,7 +91,8 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(Icons.folder_open, size: 64, color: Colors.white24),
+                      const Icon(Icons.folder_open,
+                          size: 64, color: Colors.white24),
                       const SizedBox(height: 16),
                       const Text(
                         'Vault is empty',
@@ -92,8 +100,7 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
                       ),
                       const SizedBox(height: 24),
                       ElevatedButton.icon(
-                        onPressed: () {
-                        },
+                        onPressed: () {},
                         icon: const Icon(Icons.upload_file),
                         label: const Text('Upload File'),
                       ),
@@ -104,8 +111,10 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
                   itemCount: _files.length,
                   itemBuilder: (context, index) {
                     return ListTile(
-                      title: Text(_files[index], style: const TextStyle(color: Colors.white)),
-                      leading: const Icon(Icons.insert_drive_file, color: Colors.blue),
+                      title: Text(_files[index],
+                          style: const TextStyle(color: Colors.white)),
+                      leading: const Icon(Icons.insert_drive_file,
+                          color: Colors.blue),
                     );
                   },
                 ),

@@ -20,20 +20,20 @@ class SplashScreen extends ConsumerWidget {
           data: (status) {
             Future.microtask(() async {
               if (context.mounted) {
-                 try {
-                   final docsDir = await getNebulaDocumentsDirectory();
-                   final dbPath = p.join(docsDir.path, 'nebula.db');
-                   final dbFile = File(dbPath);
-                   final exists = await dbFile.exists();
-
-                   if (exists) {
-                     context.go('/login');
-                   } else {
-                     context.go('/welcome');
-                   }
-                 } catch (e) {
-                   context.go('/welcome');
-                 }
+                try {
+                  switch (status) {
+                    case InitializationStatus.needsOnboarding:
+                      context.go('/welcome');
+                      break;
+                    case InitializationStatus.needsAuth:
+                      context.go('/login');
+                      break;
+                    default:
+                      context.go('/welcome');
+                  }
+                } catch (e) {
+                  context.go('/welcome');
+                }
               }
             });
             return const CircularProgressIndicator();
@@ -45,7 +45,10 @@ class SplashScreen extends ConsumerWidget {
               const SizedBox(height: 16),
               Text(
                 'Initialization Failed',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(color: Colors.white),
+                style: Theme.of(context)
+                    .textTheme
+                    .titleLarge
+                    ?.copyWith(color: Colors.white),
               ),
               const SizedBox(height: 8),
               Padding(

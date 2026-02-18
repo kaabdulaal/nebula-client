@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:path/path.dart' as p;
 import '../../core/api/nebula_api.dart';
+import '../../core/repositories/credentials_repository.dart';
+import '../../core/services/telegram_service.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -35,20 +37,37 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     try {
       final docsDir = await getNebulaDocumentsDirectory();
       final dbPath = p.join(docsDir.path, 'nebula.db');
-      
+
       print('🔓 Attempting login at: $dbPath');
-      
+
       final result = await NebulaApi.instance.unlockWithPassword(password);
-      
+
       if (result != 0) {
         throw NebulaError(result, 'Unlock failed');
       }
-      
+
       if (mounted) {
-        context.go('/home');
+        final credsRepo = CredentialsRepository();
+
+        // --- Dynamic Credentials Check ---
+        if (!await credsRepo.hasCredentials()) {
+          print('[Login] No credentials found. Auto-syncing from Gist...');
+          await credsRepo.syncCredentials();
+        }
+
+        final creds = await credsRepo.getCredentials();
+        if (creds != null) {
+          print('[Login] Credentials Ready. Initializing Telegram...');
+          TelegramService().init(apiId: creds.apiId, apiHash: creds.apiHash);
+          context.go('/home');
+        } else {
+          print('[Login] Credentials missing. Redirecting to Cartridge Setup.');
+          context.go('/cartridge_setup');
+        }
       }
     } on NebulaError catch (e) {
-      if (e.code == 26 || e.code == 11) { // SQLITE_NOTADB or SQLITE_PROTOCOL (sometimes returned by SQLCipher on wrong key)
+      if (e.code == 26 || e.code == 11) {
+        // SQLITE_NOTADB or SQLITE_PROTOCOL (sometimes returned by SQLCipher on wrong key)
         setState(() => _error = 'Wrong password. Please try again.');
       } else {
         setState(() => _error = 'Error: ${e.message}');

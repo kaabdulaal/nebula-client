@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:nebula_client/features/auth/data/auth_repository.dart';
 import 'package:nebula_client/features/auth/state/session_provider.dart';
+import 'package:nebula_client/core/repositories/credentials_repository.dart';
+import 'package:nebula_client/core/services/telegram_service.dart';
 
 class MasterPassScreen extends ConsumerStatefulWidget {
   const MasterPassScreen({super.key});
@@ -73,8 +75,18 @@ class _MasterPassScreenState extends ConsumerState<MasterPassScreen> {
       ref.read(sessionProvider.notifier).setSession(masterKey, salt);
 
       if (mounted) {
-        // Navigate to explorer or dashboard
-        context.go('/explorer');
+        // --- Dynamic Credentials Injection Flow ---
+        final credsRepo = CredentialsRepository();
+
+        final creds = await credsRepo.getCredentials();
+        if (creds != null) {
+          print('[Auth] Credentials Ready. Initializing Telegram...');
+          TelegramService().init(apiId: creds.apiId, apiHash: creds.apiHash);
+          context.go('/home');
+        } else {
+          print('[Auth] No credentials found. Redirecting to Cartridge Setup.');
+          context.go('/cartridge_setup');
+        }
       }
     } catch (e) {
       if (mounted) {

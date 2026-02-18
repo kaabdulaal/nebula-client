@@ -40,7 +40,7 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
       appBar: AppBar(
         title: const Text('Create Master Password'),
         backgroundColor: Colors.transparent,
-        automaticallyImplyLeading: false, 
+        automaticallyImplyLeading: false,
       ),
       body: Padding(
         padding: const EdgeInsets.all(24.0),

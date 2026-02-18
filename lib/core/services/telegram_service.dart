@@ -4,7 +4,6 @@ import 'dart:ffi';
 import 'dart:isolate';
 import 'package:flutter/foundation.dart';
 import 'package:nebula_core/nebula_core.dart';
-import 'package:nebula_client/core/config/telegram_config.dart';
 
 class TelegramService {
   static final TelegramService _instance = TelegramService._internal();
@@ -14,16 +13,18 @@ class TelegramService {
   final NebulaFFI _ffi = NebulaFFI();
   final ReceivePort _updatesPort = ReceivePort();
   StreamSubscription? _updatesSubscription;
-  
+
   bool _initialized = false;
-  
+
   final _updatesController = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get updates => _updatesController.stream;
 
-  void init() {
+  void init({required int apiId, required String apiHash}) {
     if (_initialized) return;
 
     try {
+      _log('Initializing with API_ID: $apiId');
+      _log('Hash Preview: ${apiHash.substring(0, 4)}...');
       _ffi.initDartApi();
 
       _updatesSubscription = _updatesPort.listen((message) {
@@ -38,14 +39,9 @@ class TelegramService {
         }
       });
 
-      if (!TelegramConfig.isValid) {
-        _log('Telegram credentials not configured');
-        return;
-      }
-
       final portId = _updatesPort.sendPort.nativePort;
-      _ffi.startTelegram(portId, TelegramConfig.apiId, TelegramConfig.apiHash);
-      
+      _ffi.startTelegram(portId, apiId, apiHash);
+
       _initialized = true;
       _log('Service initialized');
     } catch (e) {
@@ -58,7 +54,7 @@ class TelegramService {
       _log('Not initialized');
       return;
     }
-    
+
     final jsonStr = jsonEncode(request);
     _ffi.sendTelegramRequest(jsonStr);
   }
@@ -66,7 +62,7 @@ class TelegramService {
   void _handleInternalUpdate(Map<String, dynamic> update) {
     final type = update['@type'];
     if (type == 'updateAuthorizationState') {
-       _log('Auth State Update: ${update['authorization_state']['@type']}');
+      _log('Auth State Update: ${update['authorization_state']['@type']}');
     }
   }
 

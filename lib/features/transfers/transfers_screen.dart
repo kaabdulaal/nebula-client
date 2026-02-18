@@ -61,10 +61,11 @@ class _TransfersScreenState extends ConsumerState<TransfersScreen> {
 
   Future<void> _startUpload() async {
     setState(() => _uploading = true);
-    
+
     if (mounted) {
-       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Upload feature pending real implementation')),
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Upload feature pending real implementation')),
       );
       setState(() {
         _uploading = false;

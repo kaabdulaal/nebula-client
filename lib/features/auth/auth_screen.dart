@@ -95,7 +95,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
               width: double.infinity,
               height: 56,
               child: ElevatedButton(
-                onPressed: _isLoading ? null : (_codeSent ? _verifyCode : _sendCode),
+                onPressed:
+                    _isLoading ? null : (_codeSent ? _verifyCode : _sendCode),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF0088CC),
                   foregroundColor: Colors.white,

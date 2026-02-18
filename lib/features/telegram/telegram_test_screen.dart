@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:nebula_client/core/services/telegram_service.dart';
+import 'package:nebula_client/core/repositories/credentials_repository.dart';
 
 class TelegramTestScreen extends StatefulWidget {
   const TelegramTestScreen({super.key});
@@ -15,23 +16,38 @@ class _TelegramTestScreenState extends State<TelegramTestScreen> {
   @override
   void initState() {
     super.initState();
+    _initTelegram();
+  }
+
+  Future<void> _initTelegram() async {
     try {
-        _service.init();
-        _service.updates.listen((update) {
-            final log = "UPDATE: ${update['@type']}";
-            setState(() {
-                _logs.add(log);
-            });
-        });
-        
-        // Request authorization state to verify connection
-        Future.delayed(const Duration(milliseconds: 500), () {
-            _service.send({'@type': 'getAuthorizationState'});
-        });
-    } catch (e) {
+      final repo = CredentialsRepository();
+      final creds = await repo.getCredentials();
+
+      if (creds == null) {
         setState(() {
-            _logs.add("ERROR: $e");
+          _logs.add(
+              "ERROR: No credentials found. Please complete the Setup Wizard first.");
         });
+        return;
+      }
+
+      _service.init(apiId: creds.apiId, apiHash: creds.apiHash);
+      _service.updates.listen((update) {
+        final log = "UPDATE: ${update['@type']}";
+        setState(() {
+          _logs.add(log);
+        });
+      });
+
+      // Request authorization state to verify connection
+      Future.delayed(const Duration(milliseconds: 500), () {
+        _service.send({'@type': 'getAuthorizationState'});
+      });
+    } catch (e) {
+      setState(() {
+        _logs.add("ERROR: $e");
+      });
     }
   }
 
@@ -50,17 +66,18 @@ class _TelegramTestScreenState extends State<TelegramTestScreen> {
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                    ElevatedButton(
-                        onPressed: () => _service.send({'@type': 'getAuthorizationState'}),
-                        child: const Text('Get Auth State'),
-                    ),
-                    ElevatedButton(
-                        onPressed: () => setState(() => _logs.clear()),
-                        child: const Text('Clear Logs'),
-                    ),
-                ],
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                ElevatedButton(
+                  onPressed: () =>
+                      _service.send({'@type': 'getAuthorizationState'}),
+                  child: const Text('Get Auth State'),
+                ),
+                ElevatedButton(
+                  onPressed: () => setState(() => _logs.clear()),
+                  child: const Text('Clear Logs'),
+                ),
+              ],
             ),
           ),
           Expanded(

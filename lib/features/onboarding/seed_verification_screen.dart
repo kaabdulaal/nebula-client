@@ -14,10 +14,12 @@ class SeedVerificationScreen extends ConsumerStatefulWidget {
   const SeedVerificationScreen({super.key});
 
   @override
-  ConsumerState<SeedVerificationScreen> createState() => _SeedVerificationScreenState();
+  ConsumerState<SeedVerificationScreen> createState() =>
+      _SeedVerificationScreenState();
 }
 
-class _SeedVerificationScreenState extends ConsumerState<SeedVerificationScreen> {
+class _SeedVerificationScreenState
+    extends ConsumerState<SeedVerificationScreen> {
   late int _challengeIndex;
   final _wordController = TextEditingController();
   String? _error;
@@ -54,27 +56,28 @@ class _SeedVerificationScreenState extends ConsumerState<SeedVerificationScreen>
     try {
       final docsDir = await getNebulaDocumentsDirectory();
       final dbPath = p.join(docsDir.path, 'nebula.db');
-      
+
       print('🛠️ [Finalize] Creating Database with Verified Seed...');
-      
+
       print('🛠️ [Finalize] Anchoring Vault with Mnemonic and Password...');
-      
+
       final mnemonicString = seed.join(' ');
-      final result = await NebulaApi.instance.setPassword(mnemonicString, password);
-      
+      final result =
+          await NebulaApi.instance.setPassword(mnemonicString, password);
+
       if (result != 0) {
         throw Exception("Vault anchoring failed with code $result");
       }
-      
+
       // Allow FS to flush
       await Future.delayed(const Duration(milliseconds: 500));
 
       // Clear sensitive state
       ref.invalidate(onboardingSeedProvider);
       ref.invalidate(onboardingPasswordProvider);
-      
+
       if (mounted) {
-        context.go('/home');
+        context.go('/cartridge_setup');
       }
     } catch (e) {
       setState(() => _error = "Failed to create vault: $e");
@@ -125,8 +128,8 @@ class _SeedVerificationScreenState extends ConsumerState<SeedVerificationScreen>
               child: ElevatedButton(
                 onPressed: _isLoading ? null : _verifyAndComplete,
                 style: ElevatedButton.styleFrom(
-                   backgroundColor: Colors.amber,
-                   foregroundColor: Colors.black,
+                  backgroundColor: Colors.amber,
+                  foregroundColor: Colors.black,
                 ),
                 child: _isLoading
                     ? const CircularProgressIndicator(color: Colors.black)
