@@ -69,6 +69,12 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
                context.go('/');
             },
           ),
+          IconButton(
+            icon: const Icon(Icons.bug_report),
+            onPressed: () {
+               context.push('/telegram_test');
+            },
+          ),
         ],
       ),
       body: _isLoading

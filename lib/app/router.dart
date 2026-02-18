@@ -9,6 +9,7 @@ import '../features/onboarding/seed_screen.dart';
 import '../features/onboarding/seed_verification_screen.dart';
 import '../features/onboarding/restore_wallet_screen.dart';
 import '../features/explorer/explorer_screen.dart';
+import '../features/telegram/telegram_test_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -56,6 +57,10 @@ final router = GoRouter(
     GoRoute(
       path: '/restore-wallet',
       builder: (context, state) => const RestoreWalletScreen(),
+    ),
+    GoRoute(
+      path: '/telegram_test',
+      builder: (context, state) => const TelegramTestScreen(),
     ),
   ],
 );

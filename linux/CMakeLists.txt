@@ -172,11 +172,15 @@ if(EXISTS "${NEBULA_STABLE_LIB_PATH}")
   # Also check the build output directory in case they aren't synced to stable yet
   get_filename_component(NEBULA_CORE_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../nebula_core/build/lib" ABSOLUTE)
 
+  # Path to external TDLib libraries
+  set(TDLIB_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../nebula_core/external/tdlib/lib")
+
   file(GLOB CORE_DEPENDENCIES
     "${NEBULA_CORE_LIB_DIR}/libjsoncpp.so*"
     "${NEBULA_CORE_LIB_DIR}/libsqlcipher.so*"
     "${NEBULA_CORE_BUILD_DIR}/libjsoncpp.so*"
     "${NEBULA_CORE_BUILD_DIR}/libsqlcipher.so*"
+    "${TDLIB_LIB_DIR}/libtdjson.so*"
   )
   if(CORE_DEPENDENCIES)
     install(FILES ${CORE_DEPENDENCIES}

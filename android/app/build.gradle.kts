@@ -46,12 +46,12 @@ android {
         }
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("../../../nebula_core/CMakeLists.txt")
-            // version = "3.22.1" // Let Gradle find the CMake from PATH (Nix)
-        }
-    }
+    // Removed externalNativeBuild to avoid duplication with manual build script and jniLibs
+    // externalNativeBuild {
+    //     cmake {
+    //         path = file("../../../nebula_core/CMakeLists.txt")
+    //     }
+    // }
     
     // CRITICAL: Force clean build directory before assembling to remove old artifacts
     // Note: If build issues persist, run 'flutter clean' manually.

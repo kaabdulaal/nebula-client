@@ -77,3 +77,6 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+build/
+build-android-arm64/
+android/app/src/main/jniLibs/
