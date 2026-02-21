@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 import 'package:nebula_client/core/services/telegram_service.dart';
 import 'package:nebula_client/core/repositories/credentials_repository.dart';
+import 'package:nebula_client/core/api/nebula_api.dart';
 
 class TelegramTestScreen extends StatefulWidget {
   const TelegramTestScreen({super.key});
@@ -32,7 +34,10 @@ class _TelegramTestScreenState extends State<TelegramTestScreen> {
         return;
       }
 
-      _service.init(apiId: creds.apiId, apiHash: creds.apiHash);
+      final docsDir = await getNebulaDocumentsDirectory();
+      final dbPath = p.join(docsDir.path, 'nebula_tdlib');
+
+      await _service.init(apiId: creds.apiId, apiHash: creds.apiHash, dbPath: dbPath);
       _service.updates.listen((update) {
         final log = "UPDATE: ${update['@type']}";
         setState(() {
@@ -40,7 +45,6 @@ class _TelegramTestScreenState extends State<TelegramTestScreen> {
         });
       });
 
-      // Request authorization state to verify connection
       Future.delayed(const Duration(milliseconds: 500), () {
         _service.send({'@type': 'getAuthorizationState'});
       });

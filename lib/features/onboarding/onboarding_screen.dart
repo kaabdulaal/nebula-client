@@ -1,21 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:path/path.dart' as p;
 import '../../core/repositories/credentials_repository.dart';
-import '../../core/services/telegram_service.dart';
-import '../../core/api/nebula_api.dart';
 import '../../core/auth/auth_provider.dart';
+import '../../core/auth/auth_state.dart';
 
-class CartridgeSetupScreen extends ConsumerStatefulWidget {
-  const CartridgeSetupScreen({super.key});
+class OnboardingScreen extends ConsumerStatefulWidget {
+  const OnboardingScreen({super.key});
 
   @override
-  ConsumerState<CartridgeSetupScreen> createState() =>
-      _CartridgeSetupScreenState();
+  ConsumerState<OnboardingScreen> createState() => _OnboardingScreenState();
 }
 
-class _CartridgeSetupScreenState extends ConsumerState<CartridgeSetupScreen> {
+class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   final PageController _pageController = PageController();
   int _currentPage = 0;
   bool _isCustom = false;
@@ -33,7 +30,7 @@ class _CartridgeSetupScreenState extends ConsumerState<CartridgeSetupScreen> {
     super.dispose();
   }
 
-  Future<void> _startNebula() async {
+  Future<void> _loadConfiguration() async {
     setState(() {
       _isLoading = true;
       _error = null;
@@ -41,7 +38,7 @@ class _CartridgeSetupScreenState extends ConsumerState<CartridgeSetupScreen> {
 
     try {
       final repo = CredentialsRepository();
-      TelegramCredentials? creds;
+      bool success = false;
 
       if (_isCustom) {
         final apiId = int.tryParse(_apiIdController.text);
@@ -55,32 +52,24 @@ class _CartridgeSetupScreenState extends ConsumerState<CartridgeSetupScreen> {
           return;
         }
         repo.saveCredentials(apiId, apiHash, isCustom: true);
-        creds = TelegramCredentials(apiId: apiId, apiHash: apiHash);
+        success = true;
       } else {
-        final success = await repo.syncCredentials();
-        if (success) {
-          creds = await repo.getCredentials();
-        } else {
-          creds = await repo.getCredentials();
+        success = await repo.syncCredentials();
+        if (!success) {
+           final creds = await repo.getCredentials(); 
+           if (creds != null) success = true;
         }
       }
 
-      if (creds != null) {
-        print('[CartridgeSetup] Injecting credentials: ${creds.apiId}');
-        final docsDir = await getNebulaDocumentsDirectory();
-        final dbPath = p.join(docsDir.path, 'nebula_tdlib');
-        await TelegramService().init(apiId: creds.apiId, apiHash: creds.apiHash, dbPath: dbPath);
-
+      if (success) {
         if (mounted) {
-          context.go('/auth');
+          ref.invalidate(authProvider); 
+          context.go('/auth'); 
         }
       } else {
         setState(() {
-          _error = "Failed to obtain credentials. Try manual input.";
+          _error = "Failed to load configuration. Check internet connection.";
           _isLoading = false;
-          _isCustom = true; 
-          _pageController.animateToPage(4,
-              duration: const Duration(milliseconds: 300), curve: Curves.ease);
         });
       }
     } catch (e) {
@@ -104,19 +93,19 @@ class _CartridgeSetupScreenState extends ConsumerState<CartridgeSetupScreen> {
                 onPageChanged: (page) => setState(() => _currentPage = page),
                 children: [
                   _buildSlide(
+                    'Welcome to Nebula',
+                    'Secure, distributed cloud storage built on the Telegram Network.',
+                    Icons.rocket_launch_outlined,
+                  ),
+                  _buildSlide(
                     'Decentralized Storage',
                     'Your files are split into encrypted chunks and stored across your personal Telegram cloud.',
                     Icons.cloud_off_outlined,
                   ),
                   _buildSlide(
                     'Ultimate Organization',
-                    'Manage your digital life with a familiar folder structure, backed by a powerful database.',
+                    'Manage your digital life with a familiar folder structure, backed by a powerful local database.',
                     Icons.folder_copy_outlined,
-                  ),
-                  _buildSlide(
-                    'Seamless Streaming',
-                    'Stream your media directly from Telegram without downloading the full file first.',
-                    Icons.play_circle_outline,
                   ),
                   _buildSlide(
                     'No Monthly Fees',
@@ -166,13 +155,13 @@ class _CartridgeSetupScreenState extends ConsumerState<CartridgeSetupScreen> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           const Text(
-            'Connect Nebula',
+            'Configure Network',
             style: TextStyle(
                 fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white),
           ),
           const SizedBox(height: 12),
           const Text(
-            'The "Cartridge System" allows you to inject your own API keys for total privacy and ban immunity.',
+            'Load the API Cartridge to connect to the Telegram Network.',
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.white70),
           ),
@@ -195,10 +184,10 @@ class _CartridgeSetupScreenState extends ConsumerState<CartridgeSetupScreen> {
           ),
           const SizedBox(height: 32),
           if (!_isCustom) ...[
-            const Icon(Icons.auto_awesome, size: 48, color: Colors.blueAccent),
+            const Icon(Icons.cloud_download, size: 48, color: Colors.blueAccent),
             const SizedBox(height: 16),
             const Text(
-              'Uses secure, remote-fetched keys.\nRecommended for most users.',
+              'Fetch secure configuration from Nebula Repository.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.white60),
             ),
@@ -231,7 +220,7 @@ class _CartridgeSetupScreenState extends ConsumerState<CartridgeSetupScreen> {
             width: double.infinity,
             height: 56,
             child: ElevatedButton(
-              onPressed: _isLoading ? null : _startNebula,
+              onPressed: _isLoading ? null : _loadConfiguration,
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blueAccent,
                 foregroundColor: Colors.white,
@@ -240,17 +229,9 @@ class _CartridgeSetupScreenState extends ConsumerState<CartridgeSetupScreen> {
               ),
               child: _isLoading
                   ? const CircularProgressIndicator(color: Colors.white)
-                  : const Text('Start Nebula',
+                  : const Text('Load Configuration',
                       style:
                           TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextButton(
-            onPressed: () => ref.read(authProvider.notifier).forceRestoreState(),
-            child: const Text(
-              'I already have a Vault (Force Sync)',
-              style: TextStyle(color: Colors.white54),
             ),
           ),
         ],
@@ -302,12 +283,16 @@ class _CartridgeSetupScreenState extends ConsumerState<CartridgeSetupScreen> {
           ),
           if (_currentPage < 4)
             TextButton(
-              onPressed: () => _pageController.nextPage(
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.ease),
-              child: const Text('NEXT',
-                  style: TextStyle(
-                      color: Colors.blueAccent, fontWeight: FontWeight.bold)),
+              onPressed: () {
+                _pageController.nextPage(
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.ease);
+              },
+              child: const Text(
+                'NEXT',
+                style: TextStyle(
+                    color: Colors.blueAccent, fontWeight: FontWeight.bold),
+              ),
             ),
         ],
       ),

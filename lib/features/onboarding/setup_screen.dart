@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'seed_verification_screen.dart'; // Import to access onboardingPasswordProvider
-
+import '../../core/auth/auth_provider.dart';
 class SetupScreen extends ConsumerStatefulWidget {
   const SetupScreen({super.key});
 
@@ -28,8 +27,6 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
       return;
     }
 
-    // Store password in provider and move to Seed Generation
-    ref.read(onboardingPasswordProvider.notifier).state = password;
     context.push('/seed_intro');
   }
 
@@ -86,6 +83,14 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
               child: ElevatedButton(
                 onPressed: _submitPassword,
                 child: const Text('Continue to Recovery Phrase'),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: () => ref.read(authProvider.notifier).forceRestoreState(),
+              child: const Text(
+                'I already have a Vault (Force Sync)',
+                style: TextStyle(color: Colors.white54),
               ),
             ),
           ],

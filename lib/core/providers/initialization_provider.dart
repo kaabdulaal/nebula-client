@@ -8,17 +8,16 @@ import '../api/nebula_api.dart';
 enum InitializationStatus {
   uninitialized,
   loading,
-  ready, // Vault is unlocked and credentials injected
-  needsOnboarding, // No database exists
-  needsAuth, // Database exists but locked
-  needsCartridge, // Database unlocked but no API keys
+  ready, 
+  needsOnboarding, 
+  needsAuth, 
+  needsCartridge, 
   error,
 }
 
 final initializationProvider =
     FutureProvider<InitializationStatus>((ref) async {
   try {
-    // 1. Get Application Documents Directory (platform-aware via nebula_api.dart)
     final docsDir = await getNebulaDocumentsDirectory();
     final dbPath = p.join(docsDir.path, 'nebula.db');
 

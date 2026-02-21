@@ -14,7 +14,6 @@ class RemoteConfigService {
 
       final response = await http.get(Uri.parse(url));
       if (response.statusCode == 200) {
-        // Handle both raw string and JSON-wrapped payload
         try {
           final data = jsonDecode(response.body);
           return data['payload'] as String? ?? response.body.trim();

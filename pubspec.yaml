@@ -11,11 +11,15 @@ dependencies:
     sdk: flutter
   ffi: ^2.1.3
   http: ^1.2.1
+  crypto: ^3.0.3
   flutter_riverpod: ^2.5.1
   go_router: ^14.0.0
   path_provider: ^2.1.1
   path: ^1.9.0
   window_manager: ^0.3.7
+  qr_flutter: ^4.1.0
+  shared_preferences: ^2.2.3
+  encrypt: ^5.0.3
   nebula_core:
     path: ../nebula_core
 

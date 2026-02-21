@@ -7,7 +7,6 @@ import 'core/config/app_config.dart';
 void main() {
   final config = AppConfig.dev();
 
-  // Initialize Nebula Core FFI
   final api = NebulaApi();
   int initResult = -1;
   String version = 'unknown';

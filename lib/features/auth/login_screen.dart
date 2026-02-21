@@ -6,6 +6,9 @@ import 'package:path/path.dart' as p;
 import '../../core/api/nebula_api.dart';
 import '../../core/repositories/credentials_repository.dart';
 import '../../core/services/telegram_service.dart';
+import '../../core/auth/auth_provider.dart';
+import '../../core/auth/auth_repository.dart';
+import '../../core/auth/auth_state.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -35,45 +38,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     });
 
     try {
-      final docsDir = await getNebulaDocumentsDirectory();
-      final dbPath = p.join(docsDir.path, 'nebula.db');
-
-      print('🔓 Attempting login at: $dbPath');
-
-      final result = await NebulaApi.instance.unlockWithPassword(password);
-
-      if (result != 0) {
-        throw NebulaError(result, 'Unlock failed');
-      }
-
-      if (mounted) {
-        final credsRepo = CredentialsRepository();
-
-        // --- Dynamic Credentials Check ---
-        if (!await credsRepo.hasCredentials()) {
-          print('[Login] No credentials found. Auto-syncing from Gist...');
-          await credsRepo.syncCredentials();
+      await ref.read(authProvider.notifier).unlockVault(password);
+      
+      final auth = ref.read(authProvider);
+      if (auth.status != AuthStateStatus.ready && mounted) {
+        if (auth.errorMessage != null) {
+          final msg = auth.errorMessage!;
+          if (msg.contains('SUPERGROUP') || msg.contains('discovery')) {
+            return;
+          }
+          setState(() => _error = msg);
         }
-
-        final creds = await credsRepo.getCredentials();
-        if (creds != null) {
-          print('[Login] Credentials Ready. Initializing Telegram...');
-          TelegramService().init(apiId: creds.apiId, apiHash: creds.apiHash);
-          context.go('/home');
-        } else {
-          print('[Login] Credentials missing. Redirecting to Cartridge Setup.');
-          context.go('/cartridge_setup');
-        }
-      }
-    } on NebulaError catch (e) {
-      if (e.code == 26 || e.code == 11) {
-        // SQLITE_NOTADB or SQLITE_PROTOCOL (sometimes returned by SQLCipher on wrong key)
-        setState(() => _error = 'Wrong password. Please try again.');
-      } else {
-        setState(() => _error = 'Error: ${e.message}');
       }
     } catch (e) {
-      setState(() => _error = 'Invalid password or database error: $e');
+      setState(() => _error = 'Login failed: $e');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -81,6 +59,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final auth = ref.watch(authProvider);
+    final isCorrupted = auth.status == AuthStateStatus.vaultCorrupted;
+    
     return Scaffold(
       backgroundColor: const Color(0xFF1A1A1A),
       body: SafeArea(
@@ -89,6 +70,58 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              if (isCorrupted) ...[
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.red.withValues(alpha: 0.4)),
+                  ),
+                  child: Column(
+                    children: [
+                      const Icon(Icons.warning_amber_rounded, color: Colors.red, size: 48),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Vault Corrupted',
+                        style: TextStyle(color: Colors.red, fontSize: 20, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        auth.errorMessage ?? 'The local database is unreadable.',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white70, fontSize: 14),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              style: OutlinedButton.styleFrom(foregroundColor: Colors.orange),
+                              onPressed: () {
+                                ref.read(authProvider.notifier).triggerRecovery();
+                                context.push('/restore-wallet');
+                              },
+                              child: const Text('Wipe & Restore'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton(
+                              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                              onPressed: () {
+                                ref.read(authProvider.notifier).forceNewVaultSetup();
+                              },
+                              child: const Text('Start Fresh'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 32),
+              ] else ...[
               const Icon(Icons.lock_open, size: 64, color: Colors.blue),
               const SizedBox(height: 32),
               Text(
@@ -124,9 +157,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               ),
               const SizedBox(height: 16),
               TextButton(
-                onPressed: () => context.push('/restore-wallet'),
+                onPressed: () {
+                  print('[Login] Recovery requested. Wiping local vault (preserving Telegram)...');
+                  ref.read(authProvider.notifier).triggerRecovery();
+                  context.push('/restore-wallet');
+                },
                 child: const Text('Forgot Password? Recovery with Mnemonic'),
               ),
+              ],
             ],
           ),
         ),

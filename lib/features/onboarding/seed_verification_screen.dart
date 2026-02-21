@@ -5,10 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:path/path.dart' as p;
 import '../../core/api/nebula_api.dart';
+import '../../core/auth/auth_provider.dart';
+import '../../core/auth/auth_state.dart';
 import 'seed_screen.dart';
-
-// Provider to hold the password temporarily until final DB creation
-final onboardingPasswordProvider = StateProvider<String?>((ref) => null);
 
 class SeedVerificationScreen extends ConsumerStatefulWidget {
   const SeedVerificationScreen({super.key});
@@ -28,66 +27,71 @@ class _SeedVerificationScreenState
   @override
   void initState() {
     super.initState();
-    // Pick a random index to challenge (0-11)
     _challengeIndex = Random().nextInt(12);
   }
 
-  Future<void> _verifyAndComplete() async {
-    final seed = ref.read(onboardingSeedProvider);
-    final password = ref.read(onboardingPasswordProvider);
+  bool _isVerifying = false;
 
-    if (seed == null || password == null) {
-      setState(() => _error = "Session invalid. Please restart onboarding.");
+  Future<void> _verifyAndComplete() async {
+    if (_isVerifying) return;
+
+    final seed = ref.read(onboardingSeedProvider);
+    if (seed == null) {
+      if (mounted) setState(() => _error = "Session invalid. Please restart onboarding.");
       return;
     }
 
     final correctWord = seed[_challengeIndex];
     if (_wordController.text.trim().toLowerCase() != correctWord) {
-      setState(() => _error = "Incorrect word. Please try again.");
+      if (mounted) setState(() => _error = "Incorrect word. Please try again.");
       return;
     }
 
-    // Verification Success! Initialize the DB.
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
+    if (mounted) {
+      setState(() {
+        _isVerifying = true;
+        _isLoading = true;
+        _error = null;
+      });
+    }
 
     try {
-      final docsDir = await getNebulaDocumentsDirectory();
-      final dbPath = p.join(docsDir.path, 'nebula.db');
-
-      print('🛠️ [Finalize] Creating Database with Verified Seed...');
-
-      print('🛠️ [Finalize] Anchoring Vault with Mnemonic and Password...');
-
-      final mnemonicString = seed.join(' ');
-      final result =
-          await NebulaApi.instance.setPassword(mnemonicString, password);
+      final result = await ref.read(authProvider.notifier).anchorVault();
 
       if (result != 0) {
         throw Exception("Vault anchoring failed with code $result");
       }
 
-      // Allow FS to flush
+      ref.read(authProvider.notifier).setReady();
+
       await Future.delayed(const Duration(milliseconds: 500));
 
-      // Clear sensitive state
-      ref.invalidate(onboardingSeedProvider);
-      ref.invalidate(onboardingPasswordProvider);
-
       if (mounted) {
-        context.go('/cartridge_setup');
+        context.go('/home');
+        
+        ref.invalidate(onboardingSeedProvider);
+        ref.read(authProvider.notifier).clearOnboardingData();
       }
     } catch (e) {
-      setState(() => _error = "Failed to create vault: $e");
+      if (mounted) setState(() => _error = "Failed to create vault: $e");
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isVerifying = false;
+        });
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(authProvider, (previous, next) {
+      if (next.status == AuthStateStatus.initial) {
+        context.go('/onboarding');
+      }
+    });
+
     return Scaffold(
       backgroundColor: const Color(0xFF1A1A1A),
       appBar: AppBar(

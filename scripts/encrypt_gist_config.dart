@@ -3,7 +3,7 @@ import 'dart:convert';
 void main(List<String> args) {
   if (args.length < 3) {
     print('Usage: dart encrypt_gist_config.dart <api_id> <api_hash> <xor_key>');
-    print('Example: dart encrypt_gist_config.dart 12345 abcdef6789 nebula_cartridge_2026');
+    print('Example: dart encrypt_gist_config.dart 12345 abcdef6789 xorKey123');
     return;
   }
 
@@ -19,12 +19,19 @@ void main(List<String> args) {
   final config = {
     'api_id': apiId,
     'api_hash': apiHash,
-    'version': DateTime.now().millisecondsSinceEpoch, // Use timestamp as version
+    'version': DateTime.now().millisecondsSinceEpoch, 
   };
 
   final jsonStr = jsonEncode(config);
-  final obfuscated = xorEncrypt(jsonStr, xorKey);
-  final result = base64Encode(utf8.encode(obfuscated));
+  final jsonBytes = utf8.encode(jsonStr);
+  final keyBytes = utf8.encode(xorKey);
+  
+  final encryptedBytes = List<int>.filled(jsonBytes.length, 0);
+  for (var i = 0; i < jsonBytes.length; i++) {
+    encryptedBytes[i] = jsonBytes[i] ^ keyBytes[i % keyBytes.length];
+  }
+
+  final result = base64Encode(encryptedBytes);
   
   print('--- NEBULA CARTRIDGE ENCRYPTOR ---');
   print('Original: $jsonStr');
@@ -32,14 +39,3 @@ void main(List<String> args) {
   print('----------------------------------');
 }
 
-String xorEncrypt(String input, String key) {
-  final output = StringBuffer();
-  for (int i = 0; i < input.length; i++) {
-    // Note: C++ uses char which is signed in some platforms or unsigned in others.
-    // Dart's codeUnitAt is 16-bit. We need to ensure we treat it as 8-bit.
-    final charCode = input.codeUnitAt(i) & 0xFF;
-    final keyCode = key.codeUnitAt(i % key.length) & 0xFF;
-    output.writeCharCode(charCode ^ keyCode);
-  }
-  return output.toString();
-}

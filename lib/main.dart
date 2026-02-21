@@ -3,12 +3,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:window_manager/window_manager.dart';
 import 'app/router.dart';
+import 'core/auth/auth_provider.dart';
+import 'core/auth/auth_state.dart';
 
 class NebulaApp extends ConsumerWidget {
   const NebulaApp({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final router = ref.read(routerProvider);
+    
+    final authStatus = ref.watch(authProvider.select((s) => s.status));
+
     return MaterialApp.router(
       title: 'Nebula',
       theme: ThemeData(
@@ -17,6 +23,25 @@ class NebulaApp extends ConsumerWidget {
         useMaterial3: true,
       ),
       routerConfig: router,
+      builder: (context, child) {
+        if (authStatus == AuthStateStatus.initializing) {
+          return const Scaffold(
+            backgroundColor: Color(0xFF0F0F0F),
+            body: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.rocket_launch, size: 64, color: Colors.blueAccent),
+                  SizedBox(height: 24),
+                  CircularProgressIndicator(strokeWidth: 2),
+                ],
+              ),
+            ),
+          );
+        }
+
+        return child!;
+      },
     );
   }
 }

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
 import '../../../core/repositories/credentials_repository.dart';
 import '../../../core/services/telegram_service.dart';
+import '../../../core/api/nebula_api.dart';
 
 class ApiSettingsScreen extends ConsumerStatefulWidget {
   const ApiSettingsScreen({super.key});
@@ -73,9 +75,11 @@ class _ApiSettingsScreenState extends ConsumerState<ApiSettingsScreen> {
     }
   }
 
-  void _restartTelegram(int id, String hash) {
+  Future<void> _restartTelegram(int id, String hash) async {
     TelegramService().dispose();
-    TelegramService().init(apiId: id, apiHash: hash);
+    final docsDir = await getNebulaDocumentsDirectory();
+    final dbPath = p.join(docsDir.path, 'nebula_tdlib');
+    await TelegramService().init(apiId: id, apiHash: hash, dbPath: dbPath);
   }
 
   @override

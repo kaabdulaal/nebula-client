@@ -29,7 +29,11 @@ Future<Directory> getNebulaDocumentsDirectory() async {
       return nebulaDir;
     }
   } else {
-    return await getApplicationDocumentsDirectory();
+    final dir = Platform.isAndroid 
+        ? await getApplicationSupportDirectory() 
+        : await getApplicationDocumentsDirectory();
+    // Ensure we use the absolute path from the Directory object
+    return Directory(dir.path).absolute;
   }
 }
 
@@ -109,6 +113,12 @@ class NebulaApi {
     final passwordPtr = password.toNativeUtf8();
 
     try {
+      // Ensure the parent directory exists before calling native init
+      final dbFile = File(dbPath);
+      if (!dbFile.parent.existsSync()) {
+        dbFile.parent.createSync(recursive: true);
+      }
+
       final result = _bindings.nebula_init(
         dbPathPtr.cast<ffi.Char>(),
         passwordPtr.cast<ffi.Char>(),
@@ -161,11 +171,6 @@ class NebulaApi {
     }
   }
 
-  void _ensureInitialized() {
-    if (!_isInitialized) {
-      throw StateError('Core not initialized. Call NebulaApi().init() first.');
-    }
-  }
 
   void cleanup() {
     if (_isInitialized) {
@@ -182,27 +187,6 @@ class NebulaApi {
     return versionPtr.cast<Utf8>().toDartString();
   }
 
-  int sendTelegramCode(String phone) {
-    _ensureInitialized();
-
-    final phonePtr = phone.toNativeUtf8();
-    try {
-      return _bindings.telegram_send_code(phonePtr.cast<ffi.Char>());
-    } finally {
-      calloc.free(phonePtr);
-    }
-  }
-
-  int checkTelegramCode(String code) {
-    _ensureInitialized();
-
-    final codePtr = code.toNativeUtf8();
-    try {
-      return _bindings.telegram_check_code(codePtr.cast<ffi.Char>());
-    } finally {
-      calloc.free(codePtr);
-    }
-  }
 
   String generateMnemonic() {
     const bufferSize = 256; // Enough for 12 words + spaces
@@ -219,14 +203,14 @@ class NebulaApi {
     }
   }
 
-  Future<int> unlockWithPassword(String password) async {
+  Future<int> checkPassword(String password) async {
     final docsDir = await getNebulaDocumentsDirectory();
     final dbPath = p.join(docsDir.path, 'nebula.db');
     final dbPathPtr = dbPath.toNativeUtf8();
     final passwordPtr = password.toNativeUtf8();
 
     try {
-      final result = _bindings.nebula_unlock_with_password(
+      final result = _bindings.nebula_check_password(
         dbPathPtr.cast<ffi.Char>(),
         passwordPtr.cast<ffi.Char>(),
       );
@@ -240,6 +224,8 @@ class NebulaApi {
       calloc.free(passwordPtr);
     }
   }
+
+  Future<int> unlockWithPassword(String password) async => checkPassword(password);
 
   bool validateMnemonic(String mnemonic) {
     final mnemonicPtr = mnemonic.toNativeUtf8();
@@ -277,8 +263,6 @@ class NebulaApi {
   }
 
   List<int>? encryptChunk(List<int> input, List<int> key, List<int> iv) {
-    _ensureInitialized();
-
     if (iv.length != 12) throw ArgumentError('IV must be exactly 12 bytes');
     if (key.length != 32) throw ArgumentError('Key must be exactly 32 bytes');
 
@@ -313,8 +297,6 @@ class NebulaApi {
   }
 
   List<int>? decryptChunk(List<int> input, List<int> key, List<int> iv) {
-    _ensureInitialized();
-
     if (iv.length != 12) throw ArgumentError('IV must be exactly 12 bytes');
     if (key.length != 32) throw ArgumentError('Key must be exactly 32 bytes');
     if (input.length < 16) throw ArgumentError('Input too short');
@@ -360,6 +342,39 @@ class NebulaApi {
       );
     } finally {
       calloc.free(mnemonicPtr);
+    }
+  }
+
+  /// Store a setting in the database
+  int setSetting(String key, String value) {
+    final keyPtr = key.toNativeUtf8();
+    final valuePtr = value.toNativeUtf8();
+    try {
+      return _bindings.nebula_set_setting(
+        keyPtr.cast<ffi.Char>(),
+        valuePtr.cast<ffi.Char>(),
+      );
+    } finally {
+      calloc.free(keyPtr);
+      calloc.free(valuePtr);
+    }
+  }
+
+  /// Retrieve a setting from the database
+  String? getSetting(String key) {
+    final keyPtr = key.toNativeUtf8();
+    final buffer = calloc<ffi.Char>(4096);
+    try {
+      final result = _bindings.nebula_get_setting(
+        keyPtr.cast<ffi.Char>(),
+        buffer,
+        4096,
+      );
+      if (result <= 0) return null;
+      return buffer.cast<Utf8>().toDartString();
+    } finally {
+      calloc.free(keyPtr);
+      calloc.free(buffer);
     }
   }
 }

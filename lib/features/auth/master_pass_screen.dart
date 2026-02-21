@@ -1,12 +1,13 @@
-import 'dart:math';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:nebula_client/features/auth/data/auth_repository.dart';
-import 'package:nebula_client/features/auth/state/session_provider.dart';
+import 'package:path/path.dart' as p;
+import 'package:nebula_client/core/auth/auth_repository.dart';
 import 'package:nebula_client/core/repositories/credentials_repository.dart';
 import 'package:nebula_client/core/services/telegram_service.dart';
+import 'package:nebula_client/core/api/nebula_api.dart';
+import 'package:nebula_client/core/auth/auth_provider.dart';
+import 'package:nebula_client/core/auth/auth_state.dart';
 
 class MasterPassScreen extends ConsumerStatefulWidget {
   const MasterPassScreen({super.key});
@@ -60,69 +61,16 @@ class _MasterPassScreenState extends ConsumerState<MasterPassScreen> {
     try {
       final password = _passController.text;
 
-      // Generate a cryptographic salt (16 bytes)
-      final random = Random.secure();
-      final salt = Uint8List.fromList(
-        List<int>.generate(16, (_) => random.nextInt(256)),
-      );
-
-      final repository = AuthRepository();
-
-      // Execute KDF in background isolate
-      final masterKey = await repository.deriveSessionKey(password, salt);
-
-      // Persist session state in RAM only
-      ref.read(sessionProvider.notifier).setSession(masterKey, salt);
+      ref.read(authProvider.notifier).setTempPassword(password);
 
       if (mounted) {
-        // --- Dynamic Credentials Injection Flow ---
-        final credsRepo = CredentialsRepository();
-
-        final creds = await credsRepo.getCredentials();
-        if (creds != null) {
-          print('[Auth] Credentials Ready. Initializing Telegram...');
-          TelegramService().init(apiId: creds.apiId, apiHash: creds.apiHash);
-          context.go('/home');
-        } else {
-          print('[Auth] No credentials found. Redirecting to Cartridge Setup.');
-          context.go('/cartridge_setup');
-        }
+        context.push('/seed_intro');
       }
     } catch (e) {
       if (mounted) {
-        showModalBottomSheet(
-          context: context,
-          isDismissible: false,
-          enableDrag: false,
-          builder: (context) => Container(
-            padding: const EdgeInsets.all(24),
-            width: double.infinity,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.gpp_bad_outlined, color: Colors.red, size: 48),
-                const SizedBox(height: 16),
-                const Text(
-                  'Security Critical Error',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Key Derivation Function failed.\nError: $e',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.grey),
-                ),
-                const SizedBox(height: 24),
-                FilledButton.icon(
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Try Again'),
-                  style: FilledButton.styleFrom(backgroundColor: Colors.red),
-                ),
-              ],
-            ),
-          ),
-        );
+        setState(() {
+          _errorMessage = 'An unexpected error occurred: $e';
+        });
       }
     } finally {
       if (mounted) {
@@ -223,6 +171,14 @@ class _MasterPassScreenState extends ConsumerState<MasterPassScreen> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Text('Next'),
+                  ),
+                  const SizedBox(height: 16),
+                  TextButton(
+                    onPressed: () => ref.read(authProvider.notifier).forceRestoreState(),
+                    child: const Text(
+                      'I already have a Vault (Force Sync)',
+                      style: TextStyle(color: Colors.white54),
+                    ),
                   ),
                 ],
               ),

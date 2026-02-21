@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/api/nebula_api.dart';
+import '../../core/auth/auth_provider.dart';
+import '../../core/auth/auth_state.dart';
 
 class ExplorerScreen extends ConsumerStatefulWidget {
   const ExplorerScreen({super.key});
@@ -17,14 +19,12 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
   @override
   void initState() {
     super.initState();
-    // Prevent accessing the DB before the build is complete or if not initialized
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadFiles();
     });
   }
 
   Future<void> _loadFiles() async {
-    // Safety check: Don't crash if core isn't ready
     if (!NebulaApi.instance.isInitialized) {
       print('⚠️ [Explorer] Core not initialized, skipping file load.');
       return;
@@ -33,12 +33,11 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
     setState(() => _isLoading = true);
 
     try {
-      // Simulate FFI call or use real one
       await Future.delayed(const Duration(milliseconds: 500));
 
       if (mounted) {
         setState(() {
-          _files = []; // Empty for now until we have real file listing
+          _files = []; 
           _isLoading = false;
         });
       }
@@ -55,6 +54,13 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(authProvider, (previous, next) {
+      if (next.status == AuthStateStatus.initial) {
+        print('[Explorer] Auth initial detected. Redirecting to Onboarding.');
+        context.go('/onboarding');
+      }
+    });
+
     return Scaffold(
       backgroundColor: const Color(0xFF1A1A1A),
       appBar: AppBar(
@@ -64,9 +70,7 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
           IconButton(
             icon: const Icon(Icons.logout),
             onPressed: () {
-               // Lock vault and logout
                NebulaApi.instance.cleanup();
-               // Navigate to Login screen specifically, not Splash/Welcome
                context.go('/login');
             },
           ),

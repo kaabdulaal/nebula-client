@@ -1,11 +1,13 @@
-import 'dart:async'; // Import for TimeoutException
+import 'dart:async'; 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter/services.dart';
 import '../../core/api/nebula_api.dart';
+import '../../core/auth/auth_provider.dart';
+import '../../core/auth/auth_state.dart';
+import '../../core/utils/crypto_utils.dart';
 
-// Temporary provider to hold the generated seed during onboarding
 final onboardingSeedProvider = StateProvider<List<String>?>((ref) => null);
 
 class SeedScreen extends ConsumerStatefulWidget {
@@ -19,7 +21,6 @@ class _SeedScreenState extends ConsumerState<SeedScreen> {
   @override
   void initState() {
     super.initState();
-    // Generate seed if not already present
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (ref.read(onboardingSeedProvider) == null) {
         _generateNativeSeed();
@@ -29,7 +30,6 @@ class _SeedScreenState extends ConsumerState<SeedScreen> {
 
   Future<void> _generateNativeSeed() async {
     try {
-      // Add timeout to prevent infinite loading if FFI hangs
       final mnemonicString = await Future.microtask(() {
         return NebulaApi.instance.generateMnemonic();
       }).timeout(const Duration(seconds: 5), onTimeout: () {
@@ -41,10 +41,10 @@ class _SeedScreenState extends ConsumerState<SeedScreen> {
 
       if (mounted) {
         ref.read(onboardingSeedProvider.notifier).state = list;
+        ref.read(authProvider.notifier).setMnemonic(CryptoUtils.mnemonicToBytes(mnemonicString));
       }
     } catch (e) {
       if (mounted) {
-        // Show error and maybe a retry button logic could be added here
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to generate seed: $e'),
@@ -67,9 +67,9 @@ class _SeedScreenState extends ConsumerState<SeedScreen> {
   }
 
   @override
+  @override
   Widget build(BuildContext context) {
     final seed = ref.watch(onboardingSeedProvider);
-
     return Scaffold(
       backgroundColor: const Color(0xFF1A1A1A),
       appBar: AppBar(
