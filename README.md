@@ -1,76 +1,59 @@
 # Nebula Client
 
-Flutter application for distributed encrypted cloud storage on Telegram.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Flutter](https://img.shields.io/badge/Flutter-%2302569B.svg?logo=Flutter&logoColor=white)](https://flutter.dev)
 
-## Stack
+Nebula is a decentralized, end-to-end encrypted (E2EE) cloud storage solution that leverages Telegram as a secure infrastructure. It transforms your Telegram account into a private, zero-knowledge vault for files and media.
 
-- **Framework**: Flutter 3.24+
-- **State Management**: Riverpod 2.6+
-- **Navigation**: GoRouter 14.0+
-- **Platform**: Android, Linux, iOS (planned), Windows (planned)
+## Key Features
 
-## Architecture
+- **Zero-Knowledge Architecture**: Encryption happens exclusively on your device. Only you hold the keys to your data.
+- **Telegram Infrastructure**: Uses Telegram's reliable distributed servers for storage, requiring no additional cloud subscriptions.
+- **Cross-Platform**: Built with Flutter for a consistent experience across Linux and Android (additional platforms coming soon).
+- **Local Vault Anchor**: Secure local caching and metadata management ensures your vault remains accessible and responsive.
+- **BYOK (Bring Your Own Keys)**: Fully customizable API credentials for advanced users who want total control over their Telegram connection.
 
-```
-lib/
-├── main.dart                  # Application entry point
-├── app/router.dart            # Route configuration
-└── features/
-    ├── auth/                  # Telegram authentication
-    ├── vault_unlock/          # Password-based vault access
-    ├── explorer/              # VFS file browser
-    └── transfers/             # Upload/download progress
-```
+## Getting Started
 
-## Dependencies
+### Prerequisites
 
-### Private Core
-```yaml
-nebula_core:
-  git:
-    url: git@github.com:YOUR_ORG/nebula-core.git
-    ref: main
-```
+- **Flutter SDK**: Stable channel (3.22+ recommended).
+- **Core Dependencies**: Nebula requires the `nebula_core` native library. Follow the build instructions in the `nebula_core` repository.
+- **Telegram API Credentials**: Obtain your `api_id` and `api_hash` from [my.telegram.org](https://my.telegram.org).
 
-Requires SSH key with deploy key access to private repository.
+### Build & Run
 
-## Build
+1. Clone the repository and its submodules:
+   ```bash
+   git clone --recursive https://github.com/nebula-storage/nebula-project.git
+   ```
+2. Navigate to the client directory:
+   ```bash
+   cd nebula_client
+   ```
+3. Install dependencies:
+   ```bash
+   flutter pub get
+   ```
+4. Run the application:
+   ```bash
+   flutter run
+   ```
 
-### Android
-```bash
-flutter build apk --release
-flutter build appbundle --release
-```
+## Architecture Overview
 
-### Linux
-```bash
-flutter build linux --release
-```
+- **State Management**: Uses **Riverpod** for predictable, reactive state handling and dependency injection.
+- **Cryptography**: High-performance AES-256-GCM streaming via **Dart FFI** to the OpenSSL-powered `nebula_core` engine.
+- **Storage Layer**: Local SQLite database for rapid metadata indexing and file state tracking.
+- **Navigation**: Structured routing managed by **go_router**.
 
-### Development
-```bash
-flutter run -d linux
-flutter run -d android
-```
+## Contributing
 
-## CI/CD
-
-GitHub Actions matrix builds for:
-- Linux (x64)
-- Windows (x64)
-- Android (APK + AAB)
-
-Requires `SSH_KEY_CORE` secret for private dependency access.
-
-## Features
-
-- Telegram phone/code authentication
-- AES-256-GCM encrypted uploads
-- 1.9GB automatic file chunking
-- Virtual file system with hidden manifests
-- Resume support for transfers
-- Zero-knowledge encryption
+We welcome community contributions. To contribute:
+1. Fork the repository.
+2. Create a feature branch.
+3. Submit a Pull Request following our internal coding guidelines.
 
 ## License
 
-MIT License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

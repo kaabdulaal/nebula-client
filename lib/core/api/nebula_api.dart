@@ -32,7 +32,6 @@ Future<Directory> getNebulaDocumentsDirectory() async {
     final dir = Platform.isAndroid 
         ? await getApplicationSupportDirectory() 
         : await getApplicationDocumentsDirectory();
-    // Ensure we use the absolute path from the Directory object
     return Directory(dir.path).absolute;
   }
 }
@@ -60,41 +59,61 @@ class NebulaApi {
   static NebulaApi get instance => _instance;
 
   late final NebulaCoreBindings _bindings;
+  NebulaCoreBindings get bindings => _bindings;
   late final ffi.DynamicLibrary _dylib;
   bool _isInitialized = false;
 
   bool get isInitialized => _isInitialized;
 
-  ffi.DynamicLibrary _loadLibrary() {
-    const libName = 'libnebula_core';
+  ffi.Pointer<T> lookup<T extends ffi.NativeType>(String symbolName) {
+    return _dylib.lookup<T>(symbolName);
+  }
 
-    if (Platform.isAndroid) {
-      try {
-        return ffi.DynamicLibrary.open('libnebula_core.so');
-      } catch (e) {
-        return ffi.DynamicLibrary.open('libnebula_core.so');
-      }
-    } else if (Platform.isLinux) {
-      try {
-        return ffi.DynamicLibrary.open('$libName.so');
-      } catch (e) {
-        final exePath = Platform.resolvedExecutable;
-        final exeDir = exePath.substring(0, exePath.lastIndexOf('/'));
-        try {
-          return ffi.DynamicLibrary.open('$exeDir/lib/$libName.so');
-        } catch (_) {
-          return ffi.DynamicLibrary.open('$exeDir/lib64/$libName.so');
-        }
-      }
-    } else if (Platform.isWindows) {
-      return ffi.DynamicLibrary.open('nebula_core.dll');
+  ffi.DynamicLibrary _loadLibrary() {
+    final String libName;
+    if (Platform.isWindows) {
+      libName = 'nebula_core.dll';
     } else if (Platform.isMacOS) {
-      return ffi.DynamicLibrary.open('$libName.dylib');
+      libName = 'libnebula_core.dylib';
     } else if (Platform.isIOS) {
       return ffi.DynamicLibrary.process();
+    } else {
+      libName = 'libnebula_core.so';
     }
+
+    try {
+      return ffi.DynamicLibrary.open(libName);
+    } catch (_) {
+    }
+
+    if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
+      final String exeDir = p.dirname(Platform.resolvedExecutable);
+      
+      final searchPaths = [
+        exeDir,                                 
+        p.join(exeDir, 'lib'),                 
+        p.join(exeDir, 'lib64'),               
+        p.join(exeDir, 'bundle', 'lib'),       
+        p.join(p.dirname(exeDir), 'lib'),      
+      ];
+
+      for (final dir in searchPaths) {
+        final path = p.join(dir, libName);
+        try {
+          if (FileSystemEntity.typeSync(path) != FileSystemEntityType.notFound) {
+            return ffi.DynamicLibrary.open(path);
+          }
+        } catch (_) {
+        }
+      }
+    }
+
+    if (Platform.isAndroid) {
+      return ffi.DynamicLibrary.open(libName);
+    }
+
     throw UnsupportedError(
-        'Platform ${Platform.operatingSystem} not supported');
+        'Could not load $libName. Ensure it is in the system path or app bundle.');
   }
 
   Future<void> init(String dbPath, String password) async {
@@ -113,7 +132,6 @@ class NebulaApi {
     final passwordPtr = password.toNativeUtf8();
 
     try {
-      // Ensure the parent directory exists before calling native init
       final dbFile = File(dbPath);
       if (!dbFile.parent.existsSync()) {
         dbFile.parent.createSync(recursive: true);
@@ -189,7 +207,7 @@ class NebulaApi {
 
 
   String generateMnemonic() {
-    const bufferSize = 256; // Enough for 12 words + spaces
+    const bufferSize = 256; 
     final buffer = calloc<ffi.Char>(bufferSize);
 
     try {
@@ -345,7 +363,6 @@ class NebulaApi {
     }
   }
 
-  /// Store a setting in the database
   int setSetting(String key, String value) {
     final keyPtr = key.toNativeUtf8();
     final valuePtr = value.toNativeUtf8();
@@ -360,7 +377,6 @@ class NebulaApi {
     }
   }
 
-  /// Retrieve a setting from the database
   String? getSetting(String key) {
     final keyPtr = key.toNativeUtf8();
     final buffer = calloc<ffi.Char>(4096);

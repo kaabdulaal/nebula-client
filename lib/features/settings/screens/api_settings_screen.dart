@@ -131,10 +131,10 @@ class _ApiSettingsScreenState extends ConsumerState<ApiSettingsScreen> {
               onPressed: _isLoading ? null : _handleSave,
               child: _isLoading
                   ? const CircularProgressIndicator()
-                  : const Text('Save & Restart'),
-            ),
-        ],
-      ),
+                   : const Text('Save & Restart'),
+             ),
+         ],
+       ),
     );
   }
 }

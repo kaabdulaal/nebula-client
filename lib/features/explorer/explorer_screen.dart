@@ -108,6 +108,11 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
                         icon: const Icon(Icons.upload_file),
                         label: const Text('Upload File'),
                       ),
+                      ElevatedButton.icon(
+                        onPressed: () {},
+                        icon: const Icon(Icons.upload_file),
+                        label: const Text('Upload File'),
+                      ),
                     ],
                   ),
                 )
