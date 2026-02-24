@@ -601,17 +601,19 @@ class AuthNotifier extends StateNotifier<AuthState> {
               print('[Auth] ERROR: channelId is null during metadata storage.');
             } else {
               await anchorService.cleanupCloudMetadata(channelId);
+              final identityHash = anchorService.computeIdentityHash(mnemonicStr, tgUserId);
               await anchorService.setCloudMetadata(
                 channelId: channelId,
                 epoch: timestamp,
                 saltHex: hex.encode(salt),
                 ivHex: hex.encode(iv),
                 encMnemonicHex: hex.encode(encMnemonic),
+                identityHash: identityHash,
               );
 
               await anchorService.saveLocalAnchor(
                 epoch: timestamp,
-                identityHash: anchorService.computeIdentityHash(mnemonicStr, tgUserId),
+                identityHash: identityHash,
               );
               print('[Auth] Cloud Metadata stored and local anchor updated.');
             }

@@ -349,6 +349,43 @@ class NebulaApi {
     }
   }
 
+  int decryptFile(String inputPath, String outputPath, List<int> key, List<int> iv, List<int> tag, List<int> aad) {
+    if (iv.length != 12) throw ArgumentError('IV must be exactly 12 bytes');
+    if (key.length != 32) throw ArgumentError('Key must be exactly 32 bytes');
+    if (tag.length != 16) throw ArgumentError('Tag must be exactly 16 bytes');
+
+    final inputPathPtr = inputPath.toNativeUtf8();
+    final outputPathPtr = outputPath.toNativeUtf8();
+    final keyPtr = calloc<ffi.Uint8>(key.length);
+    final ivPtr = calloc<ffi.Uint8>(iv.length);
+    final tagPtr = calloc<ffi.Uint8>(tag.length);
+    final aadPtr = calloc<ffi.Uint8>(aad.length);
+
+    try {
+      for (int i = 0; i < key.length; i++) keyPtr[i] = key[i];
+      for (int i = 0; i < iv.length; i++) ivPtr[i] = iv[i];
+      for (int i = 0; i < tag.length; i++) tagPtr[i] = tag[i];
+      for (int i = 0; i < aad.length; i++) aadPtr[i] = aad[i];
+
+      return _bindings.aes_decrypt_file(
+        inputPathPtr.cast<ffi.Char>(),
+        outputPathPtr.cast<ffi.Char>(),
+        keyPtr,
+        ivPtr,
+        tagPtr,
+        aadPtr,
+        aad.length,
+      );
+    } finally {
+      calloc.free(inputPathPtr);
+      calloc.free(outputPathPtr);
+      calloc.free(keyPtr);
+      calloc.free(ivPtr);
+      calloc.free(tagPtr);
+      calloc.free(aadPtr);
+    }
+  }
+
   int deriveMasterKey(
       String mnemonic, ffi.Pointer<ffi.Char> outHexBuffer, int bufferLength) {
     final mnemonicPtr = mnemonic.toNativeUtf8();

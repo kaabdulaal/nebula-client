@@ -66,70 +66,110 @@ class VaultAnchorService {
   }
 
 
-  Future<int?> findNebulaChannel({bool forceRefresh = false}) async {
+  Future<int?> findNebulaChannel({bool forceRefresh = false, String? expectedHash}) async {
+    _log('[DEBUG] findNebulaChannel called. forceRefresh: $forceRefresh');
     try {
       await waitForTelegramReady();
     } catch (_) {
+      _log('[ERROR] findNebulaChannel: Telegram NOT READY.');
       return null;
     }
 
-    final prefs = await SharedPreferences.getInstance();
-    
-    final docsDir = await getNebulaDocumentsDirectory();
-    final dbFile = File(p.join(docsDir.path, 'nebula.db'));
-    final isColdCache = !dbFile.existsSync();
-
-    if (!forceRefresh) {
-      final cachedId = prefs.getInt('vault_channel_id');
-      if (cachedId != null) {
-        _log('Checking cached channel ID: $cachedId');
-        try {
-          final chat = await _getChat(cachedId);
-          if (chat != null && (chat['title'] as String?) == _channelName) {
-             final hash = await getHashFromDescription(cachedId).timeout(const Duration(seconds: 5), onTimeout: () => 'PENDING');
-             if (hash != null) {
-                if (hash == 'PENDING') {
-                   _log('Hash check PENDING (syncing). Assuming cached ID $cachedId is valid for now.');
-                   return cachedId;
-                }
-                return cachedId;
-             }
+    if (!forceRefresh && NebulaApi.instance.isInitialized) {
+      final dbIdStr = NebulaApi.instance.getSetting('vault_channel_id');
+      if (dbIdStr != null) {
+        final dbId = int.tryParse(dbIdStr);
+        if (dbId != null) {
+          _log('Found cached channel ID in DB: $dbId. Verifying...');
+          if (await _verifyChatHealthy(dbId, expectedHash)) {
+            return dbId;
           }
-          _log('Cached ID $cachedId appears dead or mismatched. Triggering Anti-Panic Discovery...');
-        } catch (e) {
-          _log('Cached ID $cachedId failed ($e). Running Anti-Panic full-account search...');
-          await prefs.remove('vault_channel_id');
+          _log('DB Channel ID $dbId is invalid/stale. Clearing.');
+          NebulaApi.instance.setSetting('vault_channel_id', '');
         }
-        forceRefresh = true;
       }
     }
 
-    if (NebulaApi.instance.isInitialized && !forceRefresh) {
+    final prefs = await SharedPreferences.getInstance();
+    if (!forceRefresh) {
       final cachedId = prefs.getInt('vault_channel_id');
-      if (cachedId != null) return cachedId;
+      if (cachedId != null) {
+        if (await _verifyChatHealthy(cachedId, expectedHash)) {
+          if (NebulaApi.instance.isInitialized) {
+            NebulaApi.instance.setSetting('vault_channel_id', cachedId.toString());
+          }
+          return cachedId;
+        }
+        await prefs.remove('vault_channel_id');
+      }
     }
 
-    _log('Full-Account Search for "$_channelName" (${isColdCache ? 'Deep Sync' : 'Discovery'})...');
+    _log('Performing Server-Side Discovery for "$_channelName"...');
+    final foundId = await _searchNebulaChat();
     
-    await refreshChatList(limit: 100);
-    if (isColdCache) {
-      await Future.delayed(const Duration(seconds: 2)); 
-    }
-    
-    final foundId = await _findChannelByTitle();
     if (foundId != null) {
-      _log('Anti-Panic Discovery SUCCESS: Found "$_channelName" at ID $foundId (cache migrated).');
-      await prefs.setInt('vault_channel_id', foundId);
-    } else {
-      _log('Anti-Panic Discovery: No "$_channelName" channel found anywhere in account.');
+      if (await _verifyChatHealthy(foundId, expectedHash)) {
+        _log('Discovery SUCCESS: Found "$_channelName" at ID $foundId.');
+        await prefs.setInt('vault_channel_id', foundId);
+        if (NebulaApi.instance.isInitialized) {
+          NebulaApi.instance.setSetting('vault_channel_id', foundId.toString());
+        }
+        return foundId;
+      }
     }
-    return foundId;
+
+    _log('Discovery: No valid "$_channelName" channel found.');
+    return null;
   }
 
-  Future<int?> _findChannelByTitle() async {
+  Future<bool> _verifyChatHealthy(int chatId, String? expectedHash) async {
+    try {
+      final chat = await _getChat(chatId);
+      if (chat == null) return false;
+
+      final title = chat['title'] as String? ?? '';
+      if (title != _channelName) return false;
+
+      if (expectedHash != null) {
+        final isValid = await verifyVaultSignature(chatId, expectedHash);
+        if (!isValid) {
+          _log('Handshake Failed: IdentityHash signature mismatch in pinned message for chat $chatId');
+          return false;
+        }
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<bool> verifyVaultSignature(int chatId, String expectedHash) async {
+    final pinnedMsg = await _getChatPinnedMessage(chatId);
+    if (pinnedMsg == null) {
+      _log('Handshake Failed: No pinned message found in chat $chatId');
+      return false;
+    }
+
+    final meta = _extractMetadataFromMessage(pinnedMsg);
+    if (meta == null) {
+      _log('Handshake Failed: Pinned message in $chatId is not a Nebula Metadata message');
+      return false;
+    }
+
+    
+    final cloudHash = meta['IdentityHash'];
+    if (cloudHash != null) {
+      return cloudHash == expectedHash;
+    }
+
+    final descHash = await getHashFromDescription(chatId);
+    return descHash == expectedHash;
+  }
+
+  Future<int?> _searchNebulaChat() async {
     final completer = Completer<int?>();
     StreamSubscription? sub;
-    const extra = 'nebula_getChats_find_100';
+    const extra = 'nebula_searchChats_discovery';
 
     sub = _telegram.updates.listen((update) {
       if (update['@extra'] != extra) return;
@@ -140,8 +180,6 @@ class VaultAnchorService {
         sub?.cancel();
         _checkChatsForNebula(chatIds).then((id) {
           if (!completer.isCompleted) completer.complete(id);
-        }).catchError((e) {
-          if (!completer.isCompleted) completer.complete(null);
         });
       } else if (type == 'error') {
         sub?.cancel();
@@ -150,18 +188,49 @@ class VaultAnchorService {
     });
 
     _telegram.send({
-      '@type': 'getChats',
+      '@type': 'searchChats',
+      'query': _channelName,
+      'limit': 5, 
       '@extra': extra,
-      'limit': 100, 
     });
 
-    return completer.future.timeout(
-      const Duration(seconds: 15),
-      onTimeout: () {
-        sub?.cancel();
-        return null;
-      },
-    );
+    return completer.future.timeout(const Duration(seconds: 10), onTimeout: () => null);
+  }
+
+  Future<bool> canUpload(int chatId) async {
+    _log('[DEBUG] Checking upload permissions for chat: $chatId');
+    try {
+      final chat = await _getChat(chatId);
+      if (chat == null) return false;
+
+      final type = chat['type']?['@type'];
+      if (type == 'chatTypeSupergroup') {
+        final userId = await _telegram.getMe();
+        final member = await _telegram.getChatMember(chatId, userId);
+        final memberStatus = member?['status']?['@type'];
+        
+        _log('[DEBUG] User Status in chat: $memberStatus');
+
+        if (memberStatus == 'chatMemberStatusCreator') {
+          _log('[DEBUG] Owner Bypass active. Proceeding.');
+          return true;
+        }
+
+        final permissions = chat['permissions'] as Map?;
+        _log('[DEBUG] Chat Permissions Flags: $permissions');
+
+        final canSendMessages = permissions?['can_send_messages'] ?? true;
+        final canSendDocs = permissions?['can_send_documents'] ?? true;
+        
+        _log('[DEBUG] canSendMessages: $canSendMessages, canSendDocs: $canSendDocs');
+        
+        return canSendMessages && canSendDocs;
+      }
+      return true; 
+    } catch (e) {
+      _log('[ERROR] canUpload check failed: $e');
+      return false;
+    }
   }
 
   Future<void> refreshChatList({int limit = 100}) async {
@@ -308,7 +377,7 @@ class VaultAnchorService {
 
   Future<int?> _findExistingChannelFallback() async {
     await refreshChatList(limit: 100);
-    return _findChannelByTitle();
+    return _searchNebulaChat();
   }
 
 
@@ -318,6 +387,7 @@ class VaultAnchorService {
     required String saltHex,
     required String ivHex,
     required String encMnemonicHex,
+    required String identityHash,
   }) async {
     await waitForTelegramReady();
     _log('Storing Cloud Metadata (REAL ID Flow)...');
@@ -328,7 +398,8 @@ class VaultAnchorService {
         'Epoch:$epoch|'
         'Salt:$saltHex|'
         'IV:$ivHex|'
-        'EncMnemonic:$encMnemonicHex'
+        'EncMnemonic:$encMnemonicHex|'
+        'IdentityHash:$identityHash'
         '\n\n#NEBULA_METADATA';
 
     final completer = Completer<void>();
@@ -470,17 +541,19 @@ class VaultAnchorService {
       throw Exception('Encryption failed during forced anchor');
     }
 
+    final identityHash = computeIdentityHash(mnemonicStr, tgUserId);
     await setCloudMetadata(
       channelId: channelId,
       epoch: timestamp,
       saltHex: hex.encode(salt),
       ivHex: hex.encode(iv),
       encMnemonicHex: hex.encode(encMnemonic),
+      identityHash: identityHash,
     );
 
     await saveLocalAnchor(
       epoch: timestamp,
-      identityHash: computeIdentityHash(mnemonicStr, tgUserId),
+      identityHash: identityHash,
     );
     
     _log('DIRECT INJECTION COMPLETE.');
@@ -489,24 +562,26 @@ class VaultAnchorService {
   Future<void> cleanupCloudMetadata(int channelId) async {
     _log('Cleaning up old metadata messages in channel $channelId (Server-Side)...');
     try {
+      final msgs = await _searchAllMetadataMessages(channelId);
+      if (msgs.isEmpty) {
+        _log('No old metadata messages found. Cleanup skipped.');
+        return;
+      }
+
       try {
         _telegram.send({'@type': 'unpinAllChatMessages', 'chat_id': channelId});
       } catch (e) {
         _log('Unpin all failed (ignorable): $e');
       }
 
-      final msgs = await _searchAllMetadataMessages(channelId);
       final ids = msgs.map((m) => m['id'] as int).toList();
-
-      if (ids.isNotEmpty) {
-        _telegram.send({
-          '@type': 'deleteMessages',
-          'chat_id': channelId,
-          'message_ids': ids,
-          'revoke': true,
-        });
-        _log('Deleted ${ids.length} old metadata messages.');
-      }
+      _telegram.send({
+        '@type': 'deleteMessages',
+        'chat_id': channelId,
+        'message_ids': ids,
+        'revoke': true,
+      });
+      _log('Requested deletion of ${ids.length} old metadata messages.');
     } catch (e) {
       _log('Cleanup Error: $e');
     }
@@ -619,12 +694,14 @@ class VaultAnchorService {
     
     final encMnemonic = CryptoUtils.aesGcmEncrypt(mnemonicBytes, key, iv);
     if (encMnemonic != null) {
+      final identityHash = computeIdentityHash(mnemonic, (await _telegram.getMe()));
       await setCloudMetadata(
         channelId: channelId,
         epoch: timestamp,
         saltHex: hex.encode(salt),
         ivHex: hex.encode(iv),
         encMnemonicHex: hex.encode(encMnemonic),
+        identityHash: identityHash,
       );
       
       _log('Verifying healed metadata is readable...');
@@ -735,7 +812,14 @@ class VaultAnchorService {
       }
     }
 
-    int? channelId = await findNebulaChannel();
+    final String currentHash;
+    if (mnemonic != null && effectiveTgId != null) {
+      currentHash = computeIdentityHash(mnemonic, effectiveTgId);
+    } else {
+      currentHash = (getLocalIdentityHash() as String?) ?? ''; 
+    }
+
+    int? channelId = await findNebulaChannel(expectedHash: currentHash.isEmpty ? null : currentHash);
 
     if (channelId != null) {
       _log('Found existing "$_channelName" channel: $channelId');
