@@ -49,13 +49,34 @@ class FileNode {
       id: json['id'] as String,
       parentId: json['parent_id'] as String,
       type: FileNodeType.values.byName(json['type'] as String),
-      syncStatus: SyncStatus.values.byName(json['sync_status'] as String),
+      syncStatus: json.containsKey('sync_status') 
+          ? SyncStatus.values.byName(json['sync_status'] as String)
+          : SyncStatus.synced,
       name: json['name'] as String,
       size: json['size'] as int,
-      mimeType: json['mime_type'] as String,
+      mimeType: json['mime_type'] as String? ?? 'application/octet-stream',
       manifestMsgId: json['manifest_msg_id'] as int?,
-      createdAt: DateTime.parse(json['created_at'] as String),
-      modifiedAt: DateTime.parse(json['modified_at'] as String),
+      createdAt: json.containsKey('created_at') 
+          ? DateTime.parse(json['created_at'] as String)
+          : DateTime.now(),
+      modifiedAt: json.containsKey('modified_at') 
+          ? DateTime.parse(json['modified_at'] as String)
+          : DateTime.now(),
+    );
+  }
+
+  factory FileNode.fromSqlJson(Map<String, dynamic> json) {
+    return FileNode(
+      id: json['id'] as String,
+      parentId: json['parent_id'] as String? ?? (json['folder_id'] as String? ?? 'root'),
+      type: (json['type'] as String) == 'folder' ? FileNodeType.folder : FileNodeType.file,
+      syncStatus: (json['is_local'] == true) ? SyncStatus.uploading : SyncStatus.synced,
+      name: json['name'] as String,
+      size: json['size'] as int? ?? 0,
+      mimeType: json['mime_type'] as String? ?? 'application/octet-stream',
+      manifestMsgId: json['manifest_msg_id'] as int?,
+      createdAt: DateTime.now(), // SQL doesn't return this yet, but we have it in the table
+      modifiedAt: DateTime.now(),
     );
   }
 

@@ -40,8 +40,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     try {
       await ref.read(authProvider.notifier).unlockVault(password);
       
+      if (!mounted) return;
+
       final auth = ref.read(authProvider);
-      if (auth.status != AuthStateStatus.ready && mounted) {
+      if (auth.status != AuthStateStatus.ready) {
         if (auth.errorMessage != null) {
           final msg = auth.errorMessage!;
           if (msg.contains('SUPERGROUP') || msg.contains('discovery')) {
@@ -51,7 +53,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         }
       }
     } catch (e) {
-      setState(() => _error = 'Login failed: $e');
+      if (mounted) setState(() => _error = 'Login failed: $e');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }

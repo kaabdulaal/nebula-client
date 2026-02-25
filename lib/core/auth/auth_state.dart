@@ -30,6 +30,9 @@ class AuthState {
   final bool preferPhoneNumber;  
   final int? tgUserId;           
   final int? cloudChannelId;     
+  final int? manualChatId;       
+  final bool isDiscoveryFallback; 
+  final bool hasCloudMetadata;
   final int? sessionTimestamp;   
 
   const AuthState({
@@ -43,6 +46,9 @@ class AuthState {
     this.preferPhoneNumber = false,
     this.tgUserId,
     this.cloudChannelId,
+    this.manualChatId,
+    this.isDiscoveryFallback = false,
+    this.hasCloudMetadata = false,
     this.sessionTimestamp,
   });
 
@@ -56,6 +62,9 @@ class AuthState {
         qrLink = null,
         preferPhoneNumber = false,
         tgUserId = null,
+        manualChatId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
         cloudChannelId = null;
 
   const AuthState.locked({this.sessionTimestamp, this.errorMessage})
@@ -67,6 +76,9 @@ class AuthState {
         qrLink = null,
         preferPhoneNumber = false,
         tgUserId = null,
+        manualChatId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
         cloudChannelId = null;
 
   const AuthState.initial({this.sessionTimestamp})
@@ -79,6 +91,9 @@ class AuthState {
         qrLink = null,
         preferPhoneNumber = false,
         tgUserId = null,
+        manualChatId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
         cloudChannelId = null;
 
   const AuthState.waitingForParams({this.sessionTimestamp})
@@ -91,6 +106,9 @@ class AuthState {
         qrLink = null,
         preferPhoneNumber = false,
         tgUserId = null,
+        manualChatId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
         cloudChannelId = null;
 
   const AuthState.waitingForPhone({this.sessionTimestamp})
@@ -103,6 +121,9 @@ class AuthState {
         qrLink = null,
         preferPhoneNumber = false,
         tgUserId = null,
+        manualChatId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
         cloudChannelId = null;
 
   const AuthState.waitingForCode({this.sessionTimestamp})
@@ -115,6 +136,9 @@ class AuthState {
         qrLink = null,
         preferPhoneNumber = false,
         tgUserId = null,
+        manualChatId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
         cloudChannelId = null;
 
   const AuthState.waitingForPassword({this.sessionTimestamp})
@@ -127,6 +151,9 @@ class AuthState {
         qrLink = null,
         preferPhoneNumber = false,
         tgUserId = null,
+        manualChatId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
         cloudChannelId = null;
 
   const AuthState.needsVaultSetup({this.sessionTimestamp})
@@ -139,6 +166,9 @@ class AuthState {
         qrLink = null,
         preferPhoneNumber = false,
         tgUserId = null,
+        manualChatId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
         cloudChannelId = null;
 
   const AuthState.needsRestore({this.sessionTimestamp})
@@ -151,6 +181,9 @@ class AuthState {
         qrLink = null,
         preferPhoneNumber = false,
         tgUserId = null,
+        manualChatId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
         cloudChannelId = null;
 
   const AuthState.syncRequired({this.sessionTimestamp})
@@ -163,6 +196,9 @@ class AuthState {
         qrLink = null,
         preferPhoneNumber = false,
         tgUserId = null,
+        manualChatId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
         cloudChannelId = null;
 
   const AuthState.rekeyRequired({this.sessionTimestamp})
@@ -175,6 +211,9 @@ class AuthState {
         qrLink = null,
         preferPhoneNumber = false,
         tgUserId = null,
+        manualChatId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
         cloudChannelId = null;
 
   const AuthState.vaultCorrupted({this.sessionTimestamp, this.errorMessage})
@@ -186,6 +225,9 @@ class AuthState {
         qrLink = null,
         preferPhoneNumber = false,
         tgUserId = null,
+        manualChatId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
         cloudChannelId = null;
 
   const AuthState.ready({this.sessionTimestamp})
@@ -198,6 +240,9 @@ class AuthState {
         qrLink = null,
         preferPhoneNumber = false,
         tgUserId = null,
+        manualChatId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
         cloudChannelId = null;
 
   const AuthState.error(String message, {this.sessionTimestamp})
@@ -210,6 +255,9 @@ class AuthState {
         qrLink = null,
         preferPhoneNumber = false,
         tgUserId = null,
+        manualChatId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
         cloudChannelId = null;
 
   AuthState copyWith({
@@ -223,6 +271,9 @@ class AuthState {
     bool? preferPhoneNumber,
     int? tgUserId,
     int? cloudChannelId,
+    int? manualChatId,
+    bool? isDiscoveryFallback,
+    bool? hasCloudMetadata,
     int? sessionTimestamp,
     bool clearError = false,
     bool clearPhone = false,
@@ -230,6 +281,7 @@ class AuthState {
     bool clearMnemonic = false,
     bool clearTgUserId = false,
     bool clearCloudChannelId = false,
+    bool clearManualChatId = false,
   }) {
     return AuthState(
       status: status ?? this.status,
@@ -243,6 +295,10 @@ class AuthState {
       tgUserId: clearTgUserId ? null : (tgUserId ?? this.tgUserId),
       cloudChannelId:
           clearCloudChannelId ? null : (cloudChannelId ?? this.cloudChannelId),
+      manualChatId:
+          clearManualChatId ? null : (manualChatId ?? this.manualChatId),
+      isDiscoveryFallback: isDiscoveryFallback ?? this.isDiscoveryFallback,
+      hasCloudMetadata: hasCloudMetadata ?? this.hasCloudMetadata,
       sessionTimestamp: sessionTimestamp ?? this.sessionTimestamp,
     );
   }

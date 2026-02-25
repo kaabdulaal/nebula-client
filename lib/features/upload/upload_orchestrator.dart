@@ -11,6 +11,7 @@ import 'package:nebula_client/core/models/file_node.dart';
 import 'package:nebula_client/core/services/telegram_service.dart';
 import 'package:nebula_client/core/services/vault_anchor_service.dart';
 import 'package:nebula_client/core/models/upload_progress.dart';
+import 'package:nebula_client/core/services/sync_engine.dart';
 import 'package:nebula_client/features/upload/upload_manager.dart';
 
 class UploadOrchestrator {
@@ -76,6 +77,7 @@ class UploadOrchestrator {
         fek: fek,
         baseIv: baseIv,
         parentId: parentId,
+        mimeType: mimeType,
       );
     } catch (e, stack) {
       _log('START UPLOAD FAILED: $e');
@@ -91,6 +93,7 @@ class UploadOrchestrator {
     required String fileId,
     required File sourceFile,
     required String parentId,
+    String? mimeType,
   }) async {
     final stateJson = NebulaApi.instance.getSetting('upload_job_$fileId');
     if (stateJson == null) throw Exception('No upload state found for fileId: $fileId');
@@ -111,6 +114,7 @@ class UploadOrchestrator {
       fek: fek,
       baseIv: baseIv,
       parentId: parentId,
+      mimeType: mimeType,
     );
   }
 
@@ -121,6 +125,7 @@ class UploadOrchestrator {
     required Uint8List fek,
     required Uint8List baseIv,
     required String parentId,
+    String? mimeType,
   }) async {
     final fileSize = await sourceFile.length();
     final totalChunks = manifest.totalChunks;
@@ -189,6 +194,7 @@ class UploadOrchestrator {
       name: sourceFile.path.split(Platform.pathSeparator).last,
       size: fileSize,
       manifestMsgId: manifestMsgId,
+      mimeType: mimeType,
     );
     
     _progressController.add(UploadProgress(
@@ -209,30 +215,28 @@ class UploadOrchestrator {
     required String name,
     required int size,
     required int manifestMsgId,
+    String? mimeType,
   }) async {
-    final node = FileNode(
-      id: fileId,
-      parentId: parentId,
-      type: FileNodeType.file,
-      syncStatus: SyncStatus.synced,
-      name: name,
-      size: size,
-      mimeType: 'application/octet-stream', 
-      manifestMsgId: manifestMsgId,
-      createdAt: DateTime.now(),
-      modifiedAt: DateTime.now(),
-    );
+    try {
+      // 1. Persist to Relational VFS (C++ SQLite)
+      NebulaApi.instance.upsertFile(
+        fileId,
+        parentId == 'root' ? null : parentId,
+        name,
+        size,
+        manifestMsgId,
+        mimeType ?? 'application/octet-stream',
+      );
 
-    NebulaApi.instance.setSetting('vfs_node_$fileId', jsonEncode(node.toJson()));
-    
-    final indexStr = NebulaApi.instance.getSetting('vfs_index') ?? '[]';
-    final List<dynamic> ids = jsonDecode(indexStr);
-    if (!ids.contains(fileId)) {
-      ids.add(fileId);
-      NebulaApi.instance.setSetting('vfs_index', jsonEncode(ids));
+      _log('File persisted to Relational VFS: $name (id: $fileId)');
+
+      // 2. Schedule Auto-Push to Cloud
+      SyncEngine().scheduleAutoPush();
+      _log('Auto-push scheduled for: $name');
+    } catch (e) {
+      _log('CRITICAL: Failed to finalize VFS node for $fileId: $e');
+      rethrow;
     }
-
-    _log('Tier-1 FileNode persisted: $fileId (Index updated)');
   }
 
   Future<void> _processChunkWithRetries({

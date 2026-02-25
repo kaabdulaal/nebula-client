@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:ffi/ffi.dart';
+import 'package:convert/convert.dart';
 import 'package:nebula_core/nebula_core_bindings_generated.dart';
 
 class _NebulaLogger {
@@ -400,6 +401,20 @@ class NebulaApi {
     }
   }
 
+  Uint8List deriveMasterKeyBytes(String mnemonic) {
+    final buffer = calloc<ffi.Char>(65); 
+    try {
+      final result = deriveMasterKey(mnemonic, buffer, 65);
+      if (result != 0) {
+        throw NebulaError(result, 'Failed to derive master key');
+      }
+      final hexStr = buffer.cast<Utf8>().toDartString();
+      return Uint8List.fromList(hex.decode(hexStr));
+    } finally {
+      calloc.free(buffer);
+    }
+  }
+
   int setSetting(String key, String value) {
     final keyPtr = key.toNativeUtf8();
     final valuePtr = value.toNativeUtf8();
@@ -428,6 +443,106 @@ class NebulaApi {
     } finally {
       calloc.free(keyPtr);
       calloc.free(buffer);
+    }
+  }
+
+  int hydrateVfsFromSnapshot(String jsonPath) {
+    final pathPtr = jsonPath.toNativeUtf8();
+    try {
+      return _bindings.hydrate_vfs_from_snapshot(pathPtr.cast<ffi.Char>());
+    } finally {
+      calloc.free(pathPtr);
+    }
+  }
+
+  int upsertFolder(String id, String? parentId, String name) {
+    final idPtr = id.toNativeUtf8();
+    final pIdPtr = parentId?.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
+    try {
+      return _bindings.nebula_upsert_folder(
+        idPtr.cast<ffi.Char>(),
+        pIdPtr?.cast<ffi.Char>() ?? ffi.nullptr,
+        namePtr.cast<ffi.Char>(),
+      );
+    } finally {
+      calloc.free(idPtr);
+      if (pIdPtr != null) calloc.free(pIdPtr);
+      calloc.free(namePtr);
+    }
+  }
+
+  int upsertFile(String id, String? folderId, String name, int size, int manifestMsgId, String? mimeType) {
+    final idPtr = id.toNativeUtf8();
+    final fIdPtr = folderId?.toNativeUtf8();
+    final namePtr = name.toNativeUtf8();
+    final mimePtr = mimeType?.toNativeUtf8();
+    try {
+      return _bindings.nebula_upsert_file(
+        idPtr.cast<ffi.Char>(),
+        fIdPtr?.cast<ffi.Char>() ?? ffi.nullptr,
+        namePtr.cast<ffi.Char>(),
+        size,
+        manifestMsgId,
+        mimePtr?.cast<ffi.Char>() ?? ffi.nullptr,
+      );
+    } finally {
+      calloc.free(idPtr);
+      if (fIdPtr != null) calloc.free(fIdPtr);
+      calloc.free(namePtr);
+      if (mimePtr != null) calloc.free(mimePtr);
+    }
+  }
+
+  int deleteItem(String id) {
+    final idPtr = id.toNativeUtf8();
+    try {
+      return _bindings.nebula_delete_item(idPtr.cast<ffi.Char>());
+    } finally {
+      calloc.free(idPtr);
+    }
+  }
+
+  String listDirectory(String folderId) {
+    final folderIdPtr = folderId.toNativeUtf8();
+    ffi.Pointer<ffi.Char> resultPtr = ffi.nullptr;
+    try {
+      resultPtr = _bindings.nebula_list_directory(folderIdPtr.cast());
+      if (resultPtr == ffi.nullptr) return '[]';
+      return resultPtr.cast<Utf8>().toDartString();
+    } finally {
+      calloc.free(folderIdPtr);
+      if (resultPtr != ffi.nullptr) {
+        _bindings.nebula_free_string(resultPtr.cast());
+      }
+    }
+  }
+
+  String exportVfs() {
+    ffi.Pointer<ffi.Char> resultPtr = ffi.nullptr;
+    try {
+      resultPtr = _bindings.nebula_export_vfs();
+      if (resultPtr == ffi.nullptr) return '{}';
+      return resultPtr.cast<Utf8>().toDartString();
+    } finally {
+      if (resultPtr != ffi.nullptr) {
+        _bindings.nebula_free_string(resultPtr.cast());
+      }
+    }
+  }
+
+  String searchVfs(String query) {
+    final queryPtr = query.toNativeUtf8();
+    ffi.Pointer<ffi.Char> resultPtr = ffi.nullptr;
+    try {
+      resultPtr = _bindings.nebula_search_vfs(queryPtr.cast());
+      if (resultPtr == ffi.nullptr) return '[]';
+      return resultPtr.cast<Utf8>().toDartString();
+    } finally {
+      calloc.free(queryPtr);
+      if (resultPtr != ffi.nullptr) {
+        _bindings.nebula_free_string(resultPtr.cast());
+      }
     }
   }
 }

@@ -23,6 +23,9 @@ class TelegramService {
   final _updatesController = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get updates => _updatesController.stream;
 
+  final _fileProgressController = StreamController<(int, double)>.broadcast();
+  Stream<(int, double)> get fileProgress => _fileProgressController.stream;
+
   Map<String, dynamic>? _lastAuthState;
   final Map<int, Completer<Map<String, dynamic>>> _pendingMessages = {};
   final Map<int, Completer<String>> _pendingDownloads = {};
@@ -92,10 +95,17 @@ class TelegramService {
       if (type == 'updateFile') {
         final file = update['file'] as Map?;
         final fileId = file?['id'] as int?;
+        final size = file?['size'] as int? ?? 1;
         final local = file?['local'] as Map?;
+        final downloadedSize = local?['downloaded_size'] as int? ?? 0;
         final isCompleted = local?['is_downloading_completed'] as bool? ?? false;
         final path = local?['path'] as String?;
         
+        if (fileId != null) {
+          final progress = downloadedSize / size;
+          _fileProgressController.add((fileId, progress));
+        }
+
         if (fileId != null && isCompleted && path != null && _pendingDownloads.containsKey(fileId)) {
           _log('[DOWNLOAD] File $fileId download COMPLETED at $path');
           _pendingDownloads[fileId]!.complete(path);
@@ -262,6 +272,7 @@ class TelegramService {
     required int chatId,
     int limit = 10,
     int fromMessageId = 0,
+    int offset = 0,
   }) async {
     final extra = 'nebula_getHistory_${chatId}_${DateTime.now().microsecondsSinceEpoch}';
     final completer = Completer<List<Map<String, dynamic>>>();
@@ -289,10 +300,53 @@ class TelegramService {
       '@type': 'getChatHistory',
       'chat_id': chatId,
       'from_message_id': fromMessageId,
-      'offset': 0,
+      'offset': offset,
       'limit': limit,
       'only_local': false,
       '@extra': extra
+    });
+
+    return completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        sub?.cancel();
+        return [];
+      },
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getPinnedMessages(int chatId) async {
+    final extra = 'nebula_getPinned_${chatId}_${DateTime.now().microsecondsSinceEpoch}';
+    final completer = Completer<List<Map<String, dynamic>>>();
+    StreamSubscription? sub;
+
+    sub = _updatesController.stream.listen((update) {
+      if (update['@extra'] != extra) return;
+      final type = update['@type'];
+      if (type == 'messages') {
+        final messages = (update['messages'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+        if (!completer.isCompleted) {
+          completer.complete(messages);
+          sub?.cancel();
+        }
+      } else if (type == 'error') {
+        if (!completer.isCompleted) {
+          completer.completeError(
+              NebulaError(update['code'] as int? ?? 0, update['message'] as String? ?? 'getPinnedMessages failed'));
+          sub?.cancel();
+        }
+      }
+    });
+
+    send({
+      '@type': 'searchChatMessages',
+      'chat_id': chatId,
+      'query': '',
+      'filter': {'@type': 'searchMessagesFilterPinned'},
+      'from_message_id': 0,
+      'offset': 0,
+      'limit': 100,
+      '@extra': extra,
     });
 
     return completer.future.timeout(
@@ -385,6 +439,7 @@ class TelegramService {
         }
       } else if (type == 'error') {
         if (!completer.isCompleted) {
+          // Return null specifically if message is not found
           completer.complete(null);
           sub?.cancel();
         }
@@ -555,6 +610,81 @@ class TelegramService {
     _initialized = false;
     _lastAuthState = null;
     _log('Service disposed.');
+  }
+
+
+  Future<int> sendTextMessage({
+    required int chatId,
+    required String text,
+  }) async {
+    final extra = 'nebula_sendMsg_${DateTime.now().microsecondsSinceEpoch}';
+    final completer = Completer<int>();
+    StreamSubscription? sub;
+
+    sub = _updatesController.stream.listen((update) {
+      if (update['@extra'] != extra) return;
+      if (update['@type'] == 'message') {
+        completer.complete(update['id'] as int);
+        sub?.cancel();
+      } else if (update['@type'] == 'error') {
+        completer.completeError(Exception(update['message']));
+        sub?.cancel();
+      }
+    });
+
+    send({
+      '@type': 'sendMessage',
+      'chat_id': chatId,
+      'input_message_content': {
+        '@type': 'inputMessageText',
+        'text': {
+          '@type': 'formattedText',
+          'text': text,
+        },
+      },
+      '@extra': extra,
+    });
+
+    return completer.future.timeout(const Duration(seconds: 30));
+  }
+
+  Future<void> pinChatMessage(int chatId, int messageId) async {
+    final extra = 'pin_$messageId';
+    send({
+      '@type': 'pinChatMessage',
+      'chat_id': chatId,
+      'message_id': messageId,
+      'disable_notification': true,
+      'only_for_self': false,
+      '@extra': extra,
+    });
+    _log('[PIN] Requested pin for Message $messageId in Chat $chatId');
+  }
+
+  Future<void> unpinChatMessage(int chatId, int messageId) async {
+    final extra = 'unpin_$messageId';
+    send({
+      '@type': 'unpinChatMessage',
+      'chat_id': chatId,
+      'message_id': messageId,
+    });
+    _log('[UNPIN] Requested unpin for Message $messageId in Chat $chatId');
+  }
+
+  Future<void> deleteMessages({
+    required int chatId,
+    required List<int> messageIds,
+    bool revoke = true,
+  }) async {
+    if (messageIds.isEmpty) return;
+    
+    send({
+      '@type': 'deleteMessages',
+      'chat_id': chatId,
+      'message_ids': messageIds,
+      'revoke': revoke,
+    });
+    _log('[DELETE] Requested deletion of ${messageIds.length} messages in Chat $chatId');
   }
 
   void _log(String message) {

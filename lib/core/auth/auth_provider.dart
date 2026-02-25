@@ -11,6 +11,7 @@ import 'package:path/path.dart' as p;
 import '../api/nebula_api.dart';
 import '../repositories/credentials_repository.dart';
 import '../services/vault_anchor_service.dart';
+import '../services/sync_engine.dart';
 import '../utils/crypto_utils.dart'; 
 import 'auth_repository.dart';
 import 'auth_state.dart';
@@ -261,6 +262,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
         final docsDir = await getNebulaDocumentsDirectory();
         final dbFile = File(p.join(docsDir.path, 'nebula.db'));
         final anchorService = VaultAnchorService();
+        if (state.manualChatId != null) {
+          anchorService.setManualChatId(state.manualChatId);
+        }
 
         if (dbFile.existsSync()) {
           print('[Auth] Mandatory Cloud Check (Identity Sync)...');
@@ -283,8 +287,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
                 final channelId = await anchorService.findNebulaChannel();
                 
                 if (channelId == null) {
-                  print('[Auth] Cloud Channel not found. Falling back to Local Vault (Discovery Pending).');
-                  _discoveryPending = true;
+                  print('[Auth] Cloud Channel not found. Transitioning to Discovery Fallback.');
+                  state = AuthState.needsRestore(
+                    sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
+                  ).copyWith(isDiscoveryFallback: true);
                   checkComplete = true; 
                   break; 
                 }
@@ -353,12 +359,33 @@ class AuthNotifier extends StateNotifier<AuthState> {
           
           if (state.status != AuthStateStatus.ready && mounted) {
             if (isCoreOpen) {
+              // Derive Session Key for VFS Security Hardening
+              final password = state.tempPassword; // Assuming tempPassword holds the unlock password
+              if (password != null) {
+                final sessionKey = await CryptoUtils.pbkdf2Async(
+                  password: password,
+                  salt: Uint8List.fromList(utf8.encode('NEBULA_SESSION_SALT')),
+                  iterations: 100000,
+                );
+                SyncEngine().setMasterKey(sessionKey);
+                final mnemonic = NebulaApi.instance.getSetting('vault_mnemonic');
+                if (mnemonic != null) {
+                  final vmk = NebulaApi.instance.deriveMasterKeyBytes(mnemonic);
+                  SyncEngine().setMasterKey(vmk);
+                  SyncEngine().initializeRealTimeListener();
+                }
+              }
+
               print('[Auth] Transitioning to READY (Core is Open)');
               state = state.copyWith(
                 status: AuthStateStatus.ready,
+                errorMessage: null,
+                tempPassword: password, // Keep tempPassword for session key derivation
                 sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
               );
               _initVaultAnchoring();
+              // Trigger background sync
+              SyncEngine().pull();
             } else {
               print('[Auth] Core is CLOSED. Transitioning to LOCKED (Security Guard).');
               state = AuthState.locked(
@@ -376,34 +403,36 @@ class AuthNotifier extends StateNotifier<AuthState> {
             final vaultExists = await anchorService.detectExistingVault();
             if (!mounted) return;
 
-            if (vaultExists) {
-              print('[Auth] Existing cloud vault detected! Setting needsRestore.');
+            if (vaultExists || state.manualChatId != null) {
+              print('[Auth] Cloud vault detected (or manual ChatID set). Setting needsRestore.');
               state = AuthState.needsRestore(
                 sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-              );
+              ).copyWith(hasCloudMetadata: vaultExists);
             } else {
-              print('[Auth] No cloud vault found. Setting needsVaultSetup.');
-              state = AuthState.needsVaultSetup(
+              print('[Auth] No cloud vault found. Falling back to Restore Screen (Manual Bridge).');
+              state = AuthState.needsRestore(
                 sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-              );
+              ).copyWith(isDiscoveryFallback: true);
             }
           } catch (e) {
             if (!mounted) return;
-            print('[Auth] Cloud vault detection failed: $e. Defaulting to needsVaultSetup.');
-            state = const AuthState.needsVaultSetup();
-          }
-        }
-        } catch (e) {
-          print('[Auth] UNHANDLED ERROR in authorizationStateReady handler: $e');
-          if (mounted) {
-            state = AuthState.locked(
+            print('[Auth] Cloud vault detection failed: $e. Falling back to Restore Screen (Manual Bridge).');
+            state = AuthState.needsRestore(
               sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-            ).copyWith(
-              errorMessage: 'Startup error: ${e.toString().substring(0, (e.toString().length > 100 ? 100 : e.toString().length))}',
-            );
+            ).copyWith(isDiscoveryFallback: true);
           }
         }
-        break;
+      } catch (e) {
+        print('[Auth] UNHANDLED ERROR in authorizationStateReady handler: $e');
+        if (mounted) {
+          state = AuthState.locked(
+            sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
+          ).copyWith(
+            errorMessage: 'Startup error: ${e.toString().substring(0, (e.toString().length > 100 ? 100 : e.toString().length))}',
+          );
+        }
+      }
+      break;
 
       case 'authorizationStateLoggingOut':
       case 'authorizationStateClosed':
@@ -619,6 +648,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
             }
           }
         }
+        SyncEngine().pull();
       }
       return result;
     } finally {
@@ -635,9 +665,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
     try {
       final anchorService = VaultAnchorService();
+      if (state.manualChatId != null) {
+        anchorService.setManualChatId(state.manualChatId);
+      }
       final channelId = await anchorService.findNebulaChannel();
       if (channelId == null) {
-        state = state.copyWith(status: AuthStateStatus.needsRestore, errorMessage: 'No Cloud Vault found.');
+        state = state.copyWith(status: AuthStateStatus.needsRestore, errorMessage: 'No Cloud Vault found. Please check manual link.');
         return -1;
       }
 
@@ -691,6 +724,20 @@ class AuthNotifier extends StateNotifier<AuthState> {
         );
         print('[Auth] ANCHOR MESSAGE CONFIRMED.');
 
+        // Derive Session Key for VFS Security Hardening
+        final sessionKey = await CryptoUtils.pbkdf2Async(
+          password: password,
+          salt: Uint8List.fromList(utf8.encode('NEBULA_SESSION_SALT')),
+          iterations: 100000, 
+        );
+        SyncEngine().setMasterKey(sessionKey);
+        final mnemonic = NebulaApi.instance.getSetting('vault_mnemonic');
+        if (mnemonic != null) {
+          final vmk = NebulaApi.instance.deriveMasterKeyBytes(mnemonic);
+          SyncEngine().setMasterKey(vmk);
+          SyncEngine().initializeRealTimeListener();
+        }
+
         state = state.copyWith(
           status: AuthStateStatus.ready, 
           masterKey: 'CLOUD_RESTORED',
@@ -698,7 +745,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
           sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
         );
         
-        print('[Auth] STATE SET TO READY. Navigation allowed now.');
+        print('[Auth] STATE SET TO READY. Triggering initial VFS pull...');
+        SyncEngine().pull();
       } else {
         state = state.copyWith(status: AuthStateStatus.needsRestore, errorMessage: 'Restore failed (code: $result)');
       }
@@ -976,9 +1024,24 @@ class AuthNotifier extends StateNotifier<AuthState> {
         }
       }
 
+      // Derive Session Key for VFS Security Hardening
+      final sessionKey = await CryptoUtils.pbkdf2Async(
+        password: password,
+        salt: Uint8List.fromList(utf8.encode('NEBULA_SESSION_SALT')),
+        iterations: 100000,
+      );
+      SyncEngine().setMasterKey(sessionKey);
+      final mnemonic = NebulaApi.instance.getSetting('vault_mnemonic');
+      if (mnemonic != null) {
+        final vmk = NebulaApi.instance.deriveMasterKeyBytes(mnemonic);
+        SyncEngine().setMasterKey(vmk);
+        SyncEngine().initializeRealTimeListener();
+      }
+
       state = state.copyWith(
         status: AuthStateStatus.ready, 
         masterKey: 'LOCAL_UNLOCKED',
+        tempPassword: password, // Keep for potential re-derivation if needed
         clearError: true,
         sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
       );
@@ -986,6 +1049,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
       if (_repository.currentAuthState?['@type'] == 'authorizationStateReady') {
          _initVaultAnchoring(manualMnemonic: localMnemonic);
       }
+
+      print('[Auth] Unlock complete. Triggering background VFS catch-up pull...');
+      SyncEngine().pull();
     } else {
       print('[Auth] Local Vault Unlock FAILED (code: $result). Checking cloud sync...');
       
@@ -1060,12 +1126,24 @@ class AuthNotifier extends StateNotifier<AuthState> {
         );
         print('[Auth] ANCHOR MESSAGE CONFIRMED.');
 
+        // Derive Session Key for VFS Security Hardening
+        final sessionKey = await CryptoUtils.pbkdf2Async(
+          password: password,
+          salt: Uint8List.fromList(utf8.encode('NEBULA_SESSION_SALT')),
+          iterations: 100000, 
+        );
+        SyncEngine().setMasterKey(sessionKey);
+        final vmk = NebulaApi.instance.deriveMasterKeyBytes(mnemonic);
+        SyncEngine().setMasterKey(vmk);
+        SyncEngine().initializeRealTimeListener();
+
         state = state.copyWith(
           status: AuthStateStatus.ready,
           masterKey: 'MNEMONIC_RECOVERED',
           sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
         );
-        print('[Auth] STATE SET TO READY. Navigation allowed now.');
+        print('[Auth] STATE SET TO READY. Triggering initial VFS pull...');
+        SyncEngine().pull();
       } else {
         print('[Auth] Mnemonic Recovery FAILED (code: $result).');
         state = state.copyWith(
@@ -1242,6 +1320,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = const AuthState.needsVaultSetup();
   }
   
+  void setManualChatId(int id) {
+    print('[Auth] Setting Manual Chat ID: $id');
+    state = state.copyWith(manualChatId: id);
+  }
+
   void forceRestoreState() {
     print('[Auth] Manual Force Sync requested. Transitioning to Restore screen.');
     state = AuthState.needsRestore(

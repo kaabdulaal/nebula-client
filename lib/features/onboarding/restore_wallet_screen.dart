@@ -19,20 +19,25 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
   final _mnemonicController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
+  final _manualChatIdController = TextEditingController();
   bool _isLoading = false;
   String? _error;
   bool _useMnemonic = false;
   bool _hasCloudMetadata = false;
   bool _isCheckingMetadata = true;
+  bool _showManualDiscovery = false;
 
   @override
   void initState() {
     super.initState();
     final auth = ref.read(authProvider);
     if (auth.status == AuthStateStatus.needsRestore) {
-      _hasCloudMetadata = true;
-      _useMnemonic = false;
+      _hasCloudMetadata = auth.hasCloudMetadata;
+      _useMnemonic = !auth.hasCloudMetadata; 
       _isCheckingMetadata = false; 
+      if (auth.isDiscoveryFallback) {
+        _showManualDiscovery = true;
+      }
     }
     _checkForMetadata();
     _listenForAuthReady();
@@ -99,6 +104,7 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
     _mnemonicController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
+    _manualChatIdController.dispose();
     super.dispose();
   }
 
@@ -118,43 +124,60 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
     }
 
     try {
+      final notifier = ref.read(authProvider.notifier);
+      
+      if (_manualChatIdController.text.isNotEmpty) {
+        final manualId = int.tryParse(_manualChatIdController.text.trim());
+        if (manualId == null) {
+          if (mounted) setState(() => _error = 'Invalid Manual Chat ID (must be a number)');
+          return;
+        }
+        notifier.setManualChatId(manualId);
+      }
+
       int result;
 
-      if (!_useMnemonic && _hasCloudMetadata) {
-        debugPrint('[RestoreUI] Cloud Password Branch chosen. Calling restoreWithCloudPassword...');
-        result = await ref.read(authProvider.notifier).restoreWithCloudPassword(password);
-      } else {
+      if (!_hasCloudMetadata || _mnemonicController.text.isNotEmpty) {
         final mnemonic = _mnemonicController.text.trim();
         final confirm = _confirmPasswordController.text;
 
-        if (mnemonic.split(' ').length != 12) {
-          if (mounted) setState(() => _error = 'Please enter exactly 12 words');
-          return;
-        }
-        if (password != confirm) {
-          if (mounted) setState(() => _error = 'Passwords do not match');
-          return;
-        }
-
-        if (!NebulaApi.instance.validateMnemonic(mnemonic)) {
-          if (mounted) setState(() => _error = 'Invalid recovery phrase.');
-          return;
-        }
-
-        if (!_guardWarningShown) {
-          final guardResult = await _runRestorationGuard(mnemonic);
-          if (guardResult == RestorationGuardResult.mismatch) {
-            final shouldProceed = await _showGuardDialog(
-              title: '⚠️ Mnemonic Mismatch',
-              message: 'The recovery phrase you entered does not match the anchored backup.',
-            );
-            if (!shouldProceed) return;
-            _guardWarningShown = true;
+        if (mnemonic.isEmpty && _hasCloudMetadata) {
+          // User just provided password for existing vault
+          debugPrint('[RestoreUI] Cloud Password Branch chosen. Calling restoreWithCloudPassword...');
+          result = await ref.read(authProvider.notifier).restoreWithCloudPassword(password);
+        } else {
+          // Verification logic for Mnemonic
+          if (mnemonic.split(' ').length != 12) {
+            if (mounted) setState(() => _error = 'Please enter exactly 12 words');
+            return;
           }
-        }
+          if (password != confirm) {
+            if (mounted) setState(() => _error = 'Passwords do not match');
+            return;
+          }
+          if (!NebulaApi.instance.validateMnemonic(mnemonic)) {
+            if (mounted) setState(() => _error = 'Invalid recovery phrase.');
+            return;
+          }
 
-        debugPrint('[RestoreUI] Button Pressed. Calling restoreWithCloudPassword...');
-        result = await ref.read(authProvider.notifier).recoverVaultWithMnemonic(mnemonic, password);
+          if (!_guardWarningShown) {
+            final guardResult = await _runRestorationGuard(mnemonic);
+            if (guardResult == RestorationGuardResult.mismatch) {
+              final shouldProceed = await _showGuardDialog(
+                title: '⚠️ Mnemonic Mismatch',
+                message: 'The recovery phrase you entered does not match the anchored backup.',
+              );
+              if (!shouldProceed) return;
+              _guardWarningShown = true;
+            }
+          }
+
+          debugPrint('[RestoreUI] Mnemonic Branch chosen. Calling recoverVaultWithMnemonic...');
+          result = await ref.read(authProvider.notifier).recoverVaultWithMnemonic(mnemonic, password);
+        }
+      } else {
+        debugPrint('[RestoreUI] Cloud Password Branch chosen. Calling restoreWithCloudPassword...');
+        result = await ref.read(authProvider.notifier).restoreWithCloudPassword(password);
       }
 
         if (result == 0 && NebulaApi.instance.isInitialized) {
@@ -220,7 +243,7 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF1A1A1A),
       appBar: AppBar(
-        title: const Text('Restore Vault'),
+        title: Text(_hasCloudMetadata ? 'Unlock Existing Vault' : 'Restore Vault'),
         backgroundColor: Colors.transparent,
         elevation: 0,
       ),
@@ -231,35 +254,56 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (!_useMnemonic && _hasCloudMetadata) ...[
-                    const Text(
-                      'Vault Detected in Cloud',
-                      style: TextStyle(
-                        color: Colors.blue,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Enter your current master password to sync and restore your data.',
-                      style: TextStyle(color: Colors.grey, fontSize: 16),
-                    ),
+                  if (_hasCloudMetadata) ...[
                     const SizedBox(height: 32),
                     TextField(
                       controller: _passwordController,
                       obscureText: true,
                       style: const TextStyle(color: Colors.white),
                       decoration: const InputDecoration(
-                        labelText: 'Master Password',
+                        labelText: 'Vault Password',
                         border: OutlineInputBorder(),
+                        hintText: 'Enter password used for cloud backup',
                       ),
                       onSubmitted: (_) => _restore(),
                     ),
-                    const SizedBox(height: 16),
-                    TextButton(
-                      onPressed: () => setState(() => _useMnemonic = true),
-                      child: const Text('Forgot Password? Restore with Seed Phrase'),
+                    const SizedBox(height: 24),
+                    Theme(
+                      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                      child: ExpansionTile(
+                        title: const Text('Advanced / Lost Password',
+                            style: TextStyle(color: Colors.white54, fontSize: 13)),
+                        children: [
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 8.0),
+                            child: Text(
+                              'If you lost your password, you can recover using your 12-word seed phrase.',
+                              style: TextStyle(color: Colors.grey, fontSize: 13),
+                            ),
+                          ),
+                          TextField(
+                            controller: _mnemonicController,
+                            maxLines: 3,
+                            style: const TextStyle(color: Colors.white),
+                            decoration: const InputDecoration(
+                              labelText: 'Recovery Mnemonic (12 words)',
+                              alignLabelWithHint: true,
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          TextField(
+                            controller: _confirmPasswordController,
+                            obscureText: true,
+                            style: const TextStyle(color: Colors.white),
+                            decoration: const InputDecoration(
+                              labelText: 'New Vault Password',
+                              border: OutlineInputBorder(),
+                              hintText: 'Set a new password for restoration',
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ] else ...[
                     const Text(
@@ -272,7 +316,7 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'Enter your 12-word recovery phrase and set a new master password.',
+                      'Enter your 12-word recovery phrase and set a vault password.',
                       style: TextStyle(color: Colors.grey, fontSize: 16),
                     ),
                     const SizedBox(height: 32),
@@ -292,7 +336,7 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
                       obscureText: true,
                       style: const TextStyle(color: Colors.white),
                       decoration: const InputDecoration(
-                        labelText: 'New Master Password',
+                        labelText: 'Vault Password',
                         border: OutlineInputBorder(),
                       ),
                     ),
@@ -302,38 +346,59 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
                       obscureText: true,
                       style: const TextStyle(color: Colors.white),
                       decoration: const InputDecoration(
-                        labelText: 'Confirm New Password',
+                        labelText: 'Confirm Vault Password',
                         border: OutlineInputBorder(),
                       ),
                       onSubmitted: (_) => _restore(),
                     ),
-                    if (_hasCloudMetadata)
-                      TextButton(
-                        onPressed: () => setState(() => _useMnemonic = false),
-                        child: const Text('Back to Cloud Password'),
-                      ),
                   ],
-            if (_error != null) ...[
-              const SizedBox(height: 24),
-              Text(
-                _error!,
-                style: const TextStyle(color: Colors.red),
-              ),
-            ],
-            const SizedBox(height: 48),
-            SizedBox(
-              width: double.infinity,
-              height: 56,
-              child: ElevatedButton(
-                onPressed: _isLoading ? null : _restore,
-                child: _isLoading
-                    ? const CircularProgressIndicator()
-                    : const Text('Restore & Unlock'),
+                  const SizedBox(height: 16),
+                  if (!_hasCloudMetadata || ref.watch(authProvider).isDiscoveryFallback)
+                    Theme(
+                      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                      child: ExpansionTile(
+                        initiallyExpanded: _showManualDiscovery,
+                        title: const Text('Advanced: Manual Discovery',
+                            style: TextStyle(color: Colors.white54, fontSize: 13)),
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8.0, vertical: 8.0),
+                            child: TextField(
+                              controller: _manualChatIdController,
+                              style:
+                                  const TextStyle(color: Colors.white, fontSize: 13),
+                              decoration: const InputDecoration(
+                                labelText: 'Telegram Chat ID (e.g. -100...)',
+                                border: OutlineInputBorder(),
+                                hintText: 'Enter if auto-discovery fails',
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  if (_error != null) ...[
+                    const SizedBox(height: 24),
+                    Text(
+                      _error!,
+                      style: const TextStyle(color: Colors.red),
+                    ),
+                  ],
+                  const SizedBox(height: 48),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 56,
+                    child: ElevatedButton(
+                      onPressed: _isLoading ? null : _restore,
+                      child: _isLoading
+                          ? const CircularProgressIndicator()
+                          : const Text('Restore & Unlock'),
+                    ),
+                  ),
+                ],
               ),
             ),
-          ],
-        ),
-      ),
     );
   }
 }
