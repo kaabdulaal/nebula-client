@@ -80,3 +80,9 @@ yarn-error.log*
 build/
 build-android-arm64/
 android/app/src/main/jniLibs/
+
+# Nebula Debug & Analysis artifacts
+analyze_results*.txt
+*.enc
+*.log
+temp_*
