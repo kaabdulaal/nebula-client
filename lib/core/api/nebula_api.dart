@@ -1,5 +1,6 @@
 import 'dart:ffi' as ffi;
 import 'dart:io';
+import 'dart:isolate';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
@@ -225,22 +226,28 @@ class NebulaApi {
   Future<int> checkPassword(String password) async {
     final docsDir = await getNebulaDocumentsDirectory();
     final dbPath = p.join(docsDir.path, 'nebula.db');
-    final dbPathPtr = dbPath.toNativeUtf8();
-    final passwordPtr = password.toNativeUtf8();
-
     try {
-      final result = _bindings.nebula_check_password(
-        dbPathPtr.cast<ffi.Char>(),
-        passwordPtr.cast<ffi.Char>(),
-      );
+      final result = await Isolate.run(() {
+        final dbPathPtr = dbPath.toNativeUtf8();
+        final passwordPtr = password.toNativeUtf8();
+        try {
+          return NebulaApi.instance.bindings.nebula_check_password(
+            dbPathPtr.cast<ffi.Char>(),
+            passwordPtr.cast<ffi.Char>(),
+          );
+        } finally {
+          calloc.free(dbPathPtr);
+          calloc.free(passwordPtr);
+        }
+      });
 
       if (result == 0) {
         _isInitialized = true;
       }
       return result;
-    } finally {
-      calloc.free(dbPathPtr);
-      calloc.free(passwordPtr);
+    } catch (e) {
+      _NebulaLogger.d('checkPassword isolate error: $e');
+      return -1;
     }
   }
 
@@ -291,9 +298,15 @@ class NebulaApi {
     final keyPtr = calloc<ffi.Uint8>(key.length);
 
     try {
-      for (int i = 0; i < input.length; i++) inputPtr[i] = input[i];
-      for (int i = 0; i < iv.length; i++) ivPtr[i] = iv[i];
-      for (int i = 0; i < key.length; i++) keyPtr[i] = key[i];
+      for (int i = 0; i < input.length; i++) {
+        inputPtr[i] = input[i];
+      }
+      for (int i = 0; i < iv.length; i++) {
+        ivPtr[i] = iv[i];
+      }
+      for (int i = 0; i < key.length; i++) {
+        keyPtr[i] = key[i];
+      }
 
       final resultLen = _bindings.aes_encrypt_chunk(
         inputPtr,
@@ -326,9 +339,15 @@ class NebulaApi {
     final keyPtr = calloc<ffi.Uint8>(key.length);
 
     try {
-      for (int i = 0; i < input.length; i++) inputPtr[i] = input[i];
-      for (int i = 0; i < iv.length; i++) ivPtr[i] = iv[i];
-      for (int i = 0; i < key.length; i++) keyPtr[i] = key[i];
+      for (int i = 0; i < input.length; i++) {
+        inputPtr[i] = input[i];
+      }
+      for (int i = 0; i < iv.length; i++) {
+        ivPtr[i] = iv[i];
+      }
+      for (int i = 0; i < key.length; i++) {
+        keyPtr[i] = key[i];
+      }
 
       final resultLen = _bindings.aes_decrypt_chunk(
         inputPtr,
@@ -363,10 +382,18 @@ class NebulaApi {
     final aadPtr = calloc<ffi.Uint8>(aad.length);
 
     try {
-      for (int i = 0; i < key.length; i++) keyPtr[i] = key[i];
-      for (int i = 0; i < iv.length; i++) ivPtr[i] = iv[i];
-      for (int i = 0; i < tag.length; i++) tagPtr[i] = tag[i];
-      for (int i = 0; i < aad.length; i++) aadPtr[i] = aad[i];
+      for (int i = 0; i < key.length; i++) {
+        keyPtr[i] = key[i];
+      }
+      for (int i = 0; i < iv.length; i++) {
+        ivPtr[i] = iv[i];
+      }
+      for (int i = 0; i < tag.length; i++) {
+        tagPtr[i] = tag[i];
+      }
+      for (int i = 0; i < aad.length; i++) {
+        aadPtr[i] = aad[i];
+      }
 
       return _bindings.aes_decrypt_file(
         inputPathPtr.cast<ffi.Char>(),
@@ -446,10 +473,10 @@ class NebulaApi {
     }
   }
 
-  int hydrateVfsFromSnapshot(String jsonPath) {
+  int hydrateVfsFromSnapshot(String jsonPath, int snapshotTimestamp) {
     final pathPtr = jsonPath.toNativeUtf8();
     try {
-      return _bindings.hydrate_vfs_from_snapshot(pathPtr.cast<ffi.Char>());
+      return _bindings.hydrate_vfs_from_snapshot(pathPtr.cast<ffi.Char>(), snapshotTimestamp);
     } finally {
       calloc.free(pathPtr);
     }
@@ -494,12 +521,46 @@ class NebulaApi {
     }
   }
 
-  int deleteItem(String id) {
+  int deleteItem(String id, {int timestamp = 0}) {
     final idPtr = id.toNativeUtf8();
     try {
-      return _bindings.nebula_delete_item(idPtr.cast<ffi.Char>());
+      return _bindings.nebula_delete_item(idPtr.cast<ffi.Char>(), timestamp);
     } finally {
       calloc.free(idPtr);
+    }
+  }
+
+  /// Move a file or folder to a new parent.
+  /// Returns 0 on success, -2 on cyclic dependency, -3 on item not found.
+  int updateItemParent(String id, String newParentId) {
+    final idPtr = id.toNativeUtf8();
+    final parentPtr = newParentId.toNativeUtf8();
+    try {
+      return _bindings.nebula_update_item_parent(
+        idPtr.cast<ffi.Char>(),
+        parentPtr.cast<ffi.Char>(),
+      );
+    } finally {
+      calloc.free(idPtr);
+      calloc.free(parentPtr);
+    }
+  }
+
+  bool isTombstoned(String id, {int versionTimestamp = 0}) {
+    final idPtr = id.toNativeUtf8();
+    try {
+      return _bindings.nebula_is_tombstoned(idPtr.cast<ffi.Char>(), versionTimestamp);
+    } finally {
+      calloc.free(idPtr);
+    }
+  }
+
+  int cleanupTombstones(int beforeTimestamp) {
+    try {
+      return _bindings.nebula_cleanup_tombstones(beforeTimestamp);
+    } catch (e) {
+      _NebulaLogger.d('Failed to cleanup tombstones: $e');
+      return -1;
     }
   }
 

@@ -55,8 +55,12 @@ class TelegramService {
         if (message is String) {
           try {
             final json = jsonDecode(message);
-            _updatesController.add(json);
-            _handleInternalUpdate(json);
+            if (json is Map<String, dynamic>) {
+              _updatesController.add(json);
+              _handleInternalUpdate(json);
+            } else {
+              _log('Dropped non-Map TDLib event: ${json.runtimeType}');
+            }
           } catch (e) {
             _log('Failed to parse update: $e');
           }
@@ -162,12 +166,10 @@ class TelegramService {
     } catch (e, stack) {
       _log('[ERROR] Critical failure parsing TDLib update: $e');
       if (kDebugMode) {
-        print('UPDATE PARSING CRASH: $e \n $stack');
+        debugPrint('UPDATE PARSING CRASH: $e \n $stack');
       }
     }
   }
-
-
   void sendPhoneNumber(String phone) {
     _ffi.sendAuthenticationPhoneNumber(phone);
   }
@@ -194,6 +196,61 @@ class TelegramService {
 
   void requestAuthState() {
     send({'@type': 'getAuthorizationState'});
+  }
+
+  /// Adds a proxy configuration to TDLib. 
+  /// [type] can be 'proxyTypeSocks5', 'proxyTypeHttp', or 'proxyTypeMtproto'.
+  void addProxy({
+    required String server,
+    required int port,
+    required String type,
+    String? username,
+    String? password,
+    String? secret,
+    bool enable = true,
+  }) {
+    final proxyType = {
+      '@type': type,
+      if (type == 'proxyTypeSocks5' || type == 'proxyTypeHttp') ...{
+        'username': username ?? '',
+        'password': password ?? '',
+      },
+      if (type == 'proxyTypeMtproto') 'secret': secret ?? '',
+    };
+
+    send({
+      '@type': 'addProxy',
+      'server': server,
+      'port': port,
+      'enable': enable,
+      'type': proxyType,
+    });
+  }
+
+  void disableProxy() {
+    send({'@type': 'disableProxy'});
+  }
+
+  Future<Map<String, dynamic>?> getProxies() async {
+    final extra = 'nebula_getProxies_${DateTime.now().millisecondsSinceEpoch}';
+    final completer = Completer<Map<String, dynamic>?>();
+    StreamSubscription? sub;
+
+    sub = _updatesController.stream.listen((update) {
+      if (update['@extra'] != extra) return;
+      if (update['@type'] == 'proxies') {
+        completer.complete(update.cast<String, dynamic>());
+      } else {
+        completer.complete(null);
+      }
+      sub?.cancel();
+    });
+
+    send({'@type': 'getProxies', '@extra': extra});
+    return completer.future.timeout(const Duration(seconds: 2), onTimeout: () {
+      sub?.cancel();
+      return null;
+    });
   }
 
   Future<Map<String, dynamic>?> getChat(int chatId) async {
@@ -439,7 +496,6 @@ class TelegramService {
         }
       } else if (type == 'error') {
         if (!completer.isCompleted) {
-          // Return null specifically if message is not found
           completer.complete(null);
           sub?.cancel();
         }
@@ -662,7 +718,6 @@ class TelegramService {
   }
 
   Future<void> unpinChatMessage(int chatId, int messageId) async {
-    final extra = 'unpin_$messageId';
     send({
       '@type': 'unpinChatMessage',
       'chat_id': chatId,
@@ -689,7 +744,7 @@ class TelegramService {
 
   void _log(String message) {
     if (kDebugMode) {
-      print('[TELEGRAM] $message');
+      debugPrint('[TELEGRAM] $message');
     }
   }
 }

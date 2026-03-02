@@ -13,6 +13,7 @@ import '../repositories/credentials_repository.dart';
 import '../services/vault_anchor_service.dart';
 import '../services/sync_engine.dart';
 import '../utils/crypto_utils.dart'; 
+import '../security/secret_store.dart';
 import 'auth_repository.dart';
 import 'auth_state.dart';
 
@@ -262,132 +263,26 @@ class AuthNotifier extends StateNotifier<AuthState> {
         final docsDir = await getNebulaDocumentsDirectory();
         final dbFile = File(p.join(docsDir.path, 'nebula.db'));
         final anchorService = VaultAnchorService();
-        if (state.manualChatId != null) {
-          anchorService.setManualChatId(state.manualChatId);
-        }
 
-        if (dbFile.existsSync()) {
-          print('[Auth] Mandatory Cloud Check (Identity Sync)...');
-          _isCloudChecking = true;
+        final prefs = await SharedPreferences.getInstance();
+
+        if (dbFile.existsSync() || prefs.getInt('vault_channel_id') != null) {
+          print('[Auth] Zero Wait Boot: Local DB or Cache exists. Yielding Lock Screen instantly.');
           
-          try {
-            int retries = 0;
-            bool checkComplete = false;
-
-            while (retries < 3) {
-              try {
-                final delay = Duration(seconds: pow(2, retries).toInt());
-                if (retries > 0) {
-                  print('[Auth] Retrying cloud check in ${delay.inSeconds}s...');
-                  await Future.delayed(delay);
-                }
-
-                await anchorService.refreshChatList().timeout(const Duration(seconds: 10));
-                
-                final channelId = await anchorService.findNebulaChannel();
-                
-                if (channelId == null) {
-                  print('[Auth] Cloud Channel not found. Transitioning to Discovery Fallback.');
-                  state = AuthState.needsRestore(
-                    sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-                  ).copyWith(isDiscoveryFallback: true);
-                  checkComplete = true; 
-                  break; 
-                }
-
-                final cloudMetadata = await anchorService.getCloudMetadata(channelId).timeout(const Duration(seconds: 10));
-                final cloudHash = await anchorService.getHashFromDescription(channelId);
-
-                if (cloudMetadata == null || cloudHash == null) {
-                  print('[Auth] Metadata missing from cloud. Trusting Local Vault.');
-                  checkComplete = true;
-                  break;
-                }
-
-                final cloudEpoch = int.tryParse(cloudMetadata['Epoch'] ?? '0') ?? 0;
-                final localEpoch = await anchorService.getLocalEpoch();
-                final localHash = await anchorService.getLocalIdentityHash();
-
-                print('[Auth] Sync Check: Cloud(E:$cloudEpoch, H:$cloudHash) vs Local(E:$localEpoch, H:$localHash)');
-
-                bool identityMismatch = (localHash != null && localHash != cloudHash);
-                bool epochMismatch = cloudEpoch > localEpoch;
-
-                if (!identityMismatch && !epochMismatch) {
-                   checkComplete = true;
-                   break;
-                }
-
-                if (identityMismatch && !epochMismatch) {
-                  print('[Auth] Identity mismatch but Epoch is safe (Local: $localEpoch, Cloud: $cloudEpoch). Trusting local DB.');
-                  identityMismatch = false; 
-                }
-
-                if (epochMismatch) {
-                  if (identityMismatch) {
-                    print('[Auth] SYNC CONFLICT detect: Identity=$identityMismatch, Epoch=$epochMismatch.');
-                    state = const AuthState.syncRequired().copyWith(
-                      errorMessage: "Vault was updated on another device. Confirm to sync local database.",
-                      sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-                    );
-                    _isCloudChecking = false;
-                    return;
-                  } else {
-                    print('[Auth] Epoch mismatch but Identity matches perfectly. Silently updating local Epoch to sync with Cloud.');
-                    await anchorService.saveLocalAnchor(epoch: cloudEpoch, identityHash: cloudHash);
-                  }
-                }
-                
-                checkComplete = true; 
-                break;
-              } catch (e) {
-                retries++;
-                print('[Auth] Cloud Check attempt $retries failed: $e');
-              }
-            }
-
-            if (!checkComplete && mounted) {
-              print('[Auth] Cloud Sync SLOW or OFFLINE after 3 retries. Falling back to Lock Screen.');
-            }
-          } finally {
-            _isCloudChecking = false;
-          }
-
-          if (!mounted) return;
-
           final isCoreOpen = NebulaApi.instance.isInitialized;
           
           if (state.status != AuthStateStatus.ready && mounted) {
             if (isCoreOpen) {
-              // Derive Session Key for VFS Security Hardening
-              final password = state.tempPassword; // Assuming tempPassword holds the unlock password
-              if (password != null) {
-                final sessionKey = await CryptoUtils.pbkdf2Async(
-                  password: password,
-                  salt: Uint8List.fromList(utf8.encode('NEBULA_SESSION_SALT')),
-                  iterations: 100000,
-                );
-                SyncEngine().setMasterKey(sessionKey);
-                final mnemonic = NebulaApi.instance.getSetting('vault_mnemonic');
-                if (mnemonic != null) {
-                  final vmk = NebulaApi.instance.deriveMasterKeyBytes(mnemonic);
-                  SyncEngine().setMasterKey(vmk);
-                  SyncEngine().initializeRealTimeListener();
-                }
-              }
-
-              print('[Auth] Transitioning to READY (Core is Open)');
+              print('[Auth] Transitioning to READY (Core is Open during Reload)');
               state = state.copyWith(
                 status: AuthStateStatus.ready,
                 errorMessage: null,
-                tempPassword: password, // Keep tempPassword for session key derivation
                 sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
               );
               _initVaultAnchoring();
-              // Trigger background sync
               SyncEngine().pull();
             } else {
-              print('[Auth] Core is CLOSED. Transitioning to LOCKED (Security Guard).');
+              print('[Auth] Transitioning to LOCKED instantly.');
               state = AuthState.locked(
                 sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
               );
@@ -395,32 +290,33 @@ class AuthNotifier extends StateNotifier<AuthState> {
           } else if (state.status == AuthStateStatus.ready && _discoveryPending) {
              _initVaultAnchoring();
           }
-        } else {
-          print('[Auth] No nebula.db found. Checking cloud for existing vault...');
-          state = state.copyWith(status: AuthStateStatus.loading);
+          break;
+        }
 
-          try {
-            final vaultExists = await anchorService.detectExistingVault();
-            if (!mounted) return;
+        print('[Auth] No nebula.db found. Checking cloud for existing vault...');
+        state = state.copyWith(status: AuthStateStatus.loading);
 
-            if (vaultExists || state.manualChatId != null) {
-              print('[Auth] Cloud vault detected (or manual ChatID set). Setting needsRestore.');
-              state = AuthState.needsRestore(
-                sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-              ).copyWith(hasCloudMetadata: vaultExists);
-            } else {
-              print('[Auth] No cloud vault found. Falling back to Restore Screen (Manual Bridge).');
-              state = AuthState.needsRestore(
-                sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-              ).copyWith(isDiscoveryFallback: true);
-            }
-          } catch (e) {
-            if (!mounted) return;
-            print('[Auth] Cloud vault detection failed: $e. Falling back to Restore Screen (Manual Bridge).');
+        try {
+          final vaultExists = await anchorService.detectExistingVault();
+          if (!mounted) return;
+
+          if (vaultExists) {
+            print('[Auth] Cloud vault detected (or manual ChatID set). Setting needsRestore.');
+            state = AuthState.needsRestore(
+              sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
+            ).copyWith(hasCloudMetadata: vaultExists);
+          } else {
+            print('[Auth] No cloud vault found. Falling back to Restore Screen (Manual Bridge).');
             state = AuthState.needsRestore(
               sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
             ).copyWith(isDiscoveryFallback: true);
           }
+        } catch (e) {
+          if (!mounted) return;
+          print('[Auth] Cloud vault detection failed: $e. Falling back to Restore Screen (Manual Bridge).');
+          state = AuthState.needsRestore(
+            sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
+          ).copyWith(isDiscoveryFallback: true);
         }
       } catch (e) {
         print('[Auth] UNHANDLED ERROR in authorizationStateReady handler: $e');
@@ -603,6 +499,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
         print('[Auth] Vault Created Locally. Now storing Cloud Metadata...');
         state = state.copyWith(masterKey: 'VAULT_CREATED');
 
+        // Save password for future biometric access (Biometric Hook Completion)
+        await SecretStore.saveVaultPassword(password);
+
         if (_repository.currentAuthState?['@type'] == 'authorizationStateReady') {
           final anchorService = VaultAnchorService();
           final tgUserId = await _repository.getMe();
@@ -665,9 +564,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
     try {
       final anchorService = VaultAnchorService();
-      if (state.manualChatId != null) {
-        anchorService.setManualChatId(state.manualChatId);
-      }
+
       final channelId = await anchorService.findNebulaChannel();
       if (channelId == null) {
         state = state.copyWith(status: AuthStateStatus.needsRestore, errorMessage: 'No Cloud Vault found. Please check manual link.');
@@ -745,6 +642,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
           sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
         );
         
+        // Save password for future biometric access
+        await SecretStore.saveVaultPassword(password);
+        
         print('[Auth] STATE SET TO READY. Triggering initial VFS pull...');
         SyncEngine().pull();
       } else {
@@ -784,7 +684,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   Future<void> unlockVault(String password) async {
     if (NebulaApi.instance.isInitialized) {
-      print('[Auth] CRITICAL: unlockVault called while Core is ALREADY OPEN. ABORTING.');
+      print('[Auth] CRITICAL: unlockVault called while Core is ALREADY OPEN. RECOVERING...');
+      if (mounted) {
+         state = state.copyWith(status: AuthStateStatus.ready, clearError: true);
+      }
+      SyncEngine().pull();
       return;
     }
 
@@ -795,14 +699,22 @@ class AuthNotifier extends StateNotifier<AuthState> {
     final dbExists = File(dbPath).existsSync();
 
     if (!dbExists) {
-      print('[Auth] DB file missing during unlock! Redirecting to Restore/Setup.');
+      print('[Auth] DB file missing during unlock! Checking for cloud vault...');
       final anchorService = VaultAnchorService();
       final vaultExists = await anchorService.detectExistingVault();
-      if (mounted) {
-        final ts = DateTime.now().millisecondsSinceEpoch;
-        state = vaultExists ? AuthState.needsRestore(sessionTimestamp: ts) : AuthState.needsVaultSetup(sessionTimestamp: ts);
+      
+      if (vaultExists) {
+         print('[Auth] Cloud vault detected. Bootstrapping local DB automatically...');
+         await restoreWithCloudPassword(password);
+         return;
+      } else {
+         print('[Auth] No cloud vault found. Redirecting to Setup.');
+         if (mounted) {
+           final ts = DateTime.now().millisecondsSinceEpoch;
+           state = AuthState.needsVaultSetup(sessionTimestamp: ts);
+         }
+         return;
       }
-      return;
     }
 
     print('[Auth] Local Vault Unlock attempt...');
@@ -813,217 +725,14 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
 
     int result = await NebulaApi.instance.unlockWithPassword(password);
-    
-    if (result == 26) {
-      print('[Auth] SQLITE_NOTADB detected. Retrying after cooldown...');
-      await Future.delayed(const Duration(milliseconds: 500));
-      if (!File(dbPath).existsSync()) {
-         print('[Auth] DB disappeared during cooldown.');
-         state = state.copyWith(status: AuthStateStatus.locked, errorMessage: 'Vault database missing.');
-         return;
-      }
-      result = await NebulaApi.instance.unlockWithPassword(password);
-      
-      if (result == 26) {
-        final anchorService = VaultAnchorService();
-        int? cloudAnchorId;
-        
-        try {
-           cloudAnchorId = await anchorService.findNebulaChannel();
-        } catch (e) {
-           print('[Auth] Could not verify cloud anchor (Offline/Timeout). Assuming WRONG PASSWORD to prevent accidental wipe.');
-           state = state.copyWith(status: AuthStateStatus.locked, errorMessage: 'Invalid password or connection error.');
-           return;
-        }
-
-        if (cloudAnchorId == null) {
-          if (_repository.currentAuthState == null) {
-             print('[Auth] Network is likely down (TDLib uninitialized). Refusing to wipe offline. Assumed Wrong Password.');
-             state = state.copyWith(status: AuthStateStatus.locked, errorMessage: 'Invalid password or connection error.');
-             return;
-          }
-
-          print('[Auth] UNRECOVERABLE: Local DB is NOTADB and Cloud is Empty. Wiping local state for fresh start.');
-          if (File(dbPath).existsSync()) File(dbPath).deleteSync();
-          await anchorService.clearLocalAnchor();
-          state = const AuthState.initial();
-          return;
-        } else {
-          final metadata = await anchorService.getCloudMetadata(cloudAnchorId);
-          if (metadata != null) {
-            try {
-              final cleanSalt = metadata['Salt']!.split('\n').first.split('#').first.trim();
-              final cleanIv = metadata['IV']!.split('\n').first.split('#').first.trim();
-              final cleanEnc = metadata['EncMnemonic']!.split('\n').first.split('#').first.trim();
-
-              final salt = Uint8List.fromList(hex.decode(cleanSalt));
-              final iv = Uint8List.fromList(hex.decode(cleanIv));
-              final encMnemonic = Uint8List.fromList(hex.decode(cleanEnc));
-              
-              final key = await CryptoUtils.pbkdf2Async(
-                password: password,
-                salt: salt,
-                iterations: 600000,
-              );
-              
-              final dec = CryptoUtils.aesGcmDecrypt(encMnemonic, key, iv);
-              if (dec != null) {
-                print('[Auth] ZOMBIE DB DETECTED. Correct password but local DB produces NOTADB. Physical wipe & Triggering Restore.');
-                NebulaApi.instance.cleanup();
-                if (File(dbPath).existsSync()) File(dbPath).deleteSync();
-                await anchorService.clearLocalAnchor();
-                
-                final ts = DateTime.now().millisecondsSinceEpoch;
-                state = AuthState.needsRestore(sessionTimestamp: ts);
-                return;
-              }
-            } catch (e) {
-              print('[Auth] Failed to verify password against cloud during deadlock: $e');
-            }
-          }
-        }
-      }
-    }
 
     if (result == 0) {
-      final testQuery = NebulaApi.instance.getSetting('vault_init_sentinel');
+      // 1. INSTANT SUCCESS PATH (Optimistic / Local-First)
+      print('[Auth] Local unlock successful. Executing Optimistic UI Fire-and-Forget.');
       
-      if (testQuery == null) {
-        print('[Auth] Sentinel "vault_init_sentinel" not found. Testing DB write access...');
-        final writeRc = NebulaApi.instance.setSetting('vault_init_sentinel', '1');
-        
-        if (writeRc == 0) {
-          print('[Auth] DB Write Succeeded! Recognized as New/Empty Vault state.');
-        } else {
-          print('[Auth] CRITICAL: DB Write FAILED ($writeRc). Vault is genuinely corrupted.');
-          NebulaApi.instance.cleanup(); 
-          
-          final anchorService = VaultAnchorService();
-          int? cloudAnchorId;
-          
-          try {
-             cloudAnchorId = await anchorService.findNebulaChannel();
-          } catch (e) {
-             print('[Auth] Could not verify cloud anchor (Offline/Timeout). Refusing to wipe corrupted DB offline.');
-             state = state.copyWith(status: AuthStateStatus.locked, errorMessage: 'Local DB error. Connect to internet to recover.');
-             return;
-          }
-          
-          if (cloudAnchorId == null) {
-            if (_repository.currentAuthState == null) {
-               print('[Auth] Network is likely down. Refusing to wipe corrupted DB offline.');
-               state = state.copyWith(status: AuthStateStatus.locked, errorMessage: 'Local DB error. Connect to internet to recover.');
-               return;
-            }
-
-            print('[Auth] ZOMBIE DB (SELECT 1 FAIL) + No Cloud. Wiping corrupted .db for fresh start.');
-            if (File(dbPath).existsSync()) File(dbPath).deleteSync();
-            await anchorService.clearLocalAnchor();
-            state = AuthState.vaultCorrupted(
-              sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-              errorMessage: 'Vault database is corrupted and no cloud backup exists. Starting fresh.',
-            );
-          } else {
-            print('[Auth] ZOMBIE DB (SELECT 1 FAIL) + Cloud exists. Offering restore.');
-            if (File(dbPath).existsSync()) File(dbPath).deleteSync();
-            await anchorService.clearLocalAnchor();
-            state = AuthState.needsRestore(
-              sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-            );
-          }
-          return;
-        }
-      }
-
-      print('[Auth] Connectivity Test (SELECT 1): OK');
+      // We immediately save the password so biometrics/sync can use it
+      await SecretStore.saveVaultPassword(password);
       
-      final parityAnchorService = VaultAnchorService();
-      final parityChannelId = await parityAnchorService.findNebulaChannel();
-      if (parityChannelId != null) {
-        final metadata = await parityAnchorService.getCloudMetadata(parityChannelId);
-        if (metadata != null) {
-          try {
-            final cleanSalt = metadata['Salt']!.split('\n').first.split('#').first.trim();
-            final cleanIv = metadata['IV']!.split('\n').first.split('#').first.trim();
-            final cleanEnc = metadata['EncMnemonic']!.split('\n').first.split('#').first.trim();
-            
-            final salt = Uint8List.fromList(hex.decode(cleanSalt));
-            final iv = Uint8List.fromList(hex.decode(cleanIv));
-            final encMnemonic = Uint8List.fromList(hex.decode(cleanEnc));
-            
-            final key = await CryptoUtils.pbkdf2Async(password: password, salt: salt, iterations: 600000);
-            final dec = CryptoUtils.aesGcmDecrypt(encMnemonic, key, iv);
-            
-            if (dec == null) {
-              print('[Auth] CRITICAL: Local password valid, but Cloud uses a DIFFERENT password (changed elsewhere).');
-              NebulaApi.instance.cleanup();
-              final docsDir = await getNebulaDocumentsDirectory();
-              final dbFile = File(p.join(docsDir.path, 'nebula.db'));
-              if (dbFile.existsSync()) dbFile.deleteSync();
-              await parityAnchorService.clearLocalAnchor();
-              
-              state = state.copyWith(
-                status: AuthStateStatus.needsRestore,
-                errorMessage: 'Password was changed on another device. Please Restore.',
-                sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-              );
-              return; 
-            } else {
-              print('[Auth] Cloud Parity Check: PASS.');
-            }
-          } catch (e) {
-            print('[Auth] Cloud Parity Check ERROR (ignoring): $e');
-          }
-        }
-      }
-      
-      if (_repository.currentAuthState == null) {
-         final creds = await _credsRepository.getCredentials();
-         if (creds != null) {
-            print('[Auth] DB Unlocked offline. Pulling credentials to start TDLib...');
-            final docsDir = await getNebulaDocumentsDirectory();
-            await _startTDLib(creds, docsDir.path);
-         }
-      }
-
-      final localMnemonic = NebulaApi.instance.getSetting('vault_mnemonic');
-      if (localMnemonic != null) {
-        print('[Auth] Mnemonic successfully retrieved for Late-Stage Healing.');
-        final localMnemonicBytes = CryptoUtils.mnemonicToBytes(localMnemonic);
-        try {
-          print('[Auth] Local Vault Decrypted. Attempting Late-Stage Healing...');
-          final anchorService = VaultAnchorService();
-          
-          int? tgUserId;
-          try {
-            tgUserId = await _repository.getMe();
-          } catch (e) {
-            print('[Auth] Offline: Could not fetch Telegram User ID for Healing.');
-          }
-
-          if (tgUserId != null) {
-            await anchorService.ensureAnchor(
-              mnemonic: localMnemonic, 
-              tgUserId: tgUserId, 
-              password: password
-            );
-          }
-        } finally {
-          CryptoUtils.secureClear(localMnemonicBytes);
-        }
-      }
-
-      final anchorService = VaultAnchorService();
-      final channelId = await anchorService.findNebulaChannel();
-      if (channelId != null) {
-        final cloudHash = await anchorService.getHashFromDescription(channelId);
-        final currentLocalHash = await anchorService.getLocalIdentityHash();
-        if (cloudHash != null && cloudHash != currentLocalHash) {
-           print('[Auth] Decryption successful. Aligning metadata with Cloud Hash: $cloudHash');
-           await anchorService.saveLocalAnchor(identityHash: cloudHash);
-        }
-      }
-
       // Derive Session Key for VFS Security Hardening
       final sessionKey = await CryptoUtils.pbkdf2Async(
         password: password,
@@ -1031,6 +740,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         iterations: 100000,
       );
       SyncEngine().setMasterKey(sessionKey);
+      
       final mnemonic = NebulaApi.instance.getSetting('vault_mnemonic');
       if (mnemonic != null) {
         final vmk = NebulaApi.instance.deriveMasterKeyBytes(mnemonic);
@@ -1038,6 +748,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         SyncEngine().initializeRealTimeListener();
       }
 
+      // Immediately release the UI lock
       state = state.copyWith(
         status: AuthStateStatus.ready, 
         masterKey: 'LOCAL_UNLOCKED',
@@ -1046,35 +757,113 @@ class AuthNotifier extends StateNotifier<AuthState> {
         sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
       );
       
-      if (_repository.currentAuthState?['@type'] == 'authorizationStateReady') {
-         _initVaultAnchoring(manualMnemonic: localMnemonic);
-      }
-
-      print('[Auth] Unlock complete. Triggering background VFS catch-up pull...');
-      SyncEngine().pull();
-    } else {
-      print('[Auth] Local Vault Unlock FAILED (code: $result). Checking cloud sync...');
-      
-      final anchorService = VaultAnchorService();
-      final channelId = await anchorService.findNebulaChannel();
-      if (channelId != null) {
-        final cloudHash = await anchorService.getHashFromDescription(channelId);
-        final localHash = await anchorService.getLocalIdentityHash();
-        
-        if (localHash != null && cloudHash != null && localHash != cloudHash) {
-          print('[Auth] Identity mismatch during login. Suggesting Restore.');
-          state = state.copyWith(
-            status: AuthStateStatus.locked,
-            errorMessage: 'Identity mismatch. Please Restore from Cloud.',
-          );
-          return;
+      // Background / Unawaited checks
+      Future(() async {
+        if (_repository.currentAuthState == null) {
+           final creds = await _credsRepository.getCredentials();
+           if (creds != null) {
+              print('[Auth] DB Unlocked offline. Pulling credentials to start TDLib...');
+              final docsDir = await getNebulaDocumentsDirectory();
+              await _startTDLib(creds, docsDir.path);
+           }
         }
-      }
+        
+        final testQuery = NebulaApi.instance.getSetting('vault_init_sentinel');
+        if (testQuery == null) {
+           final writeRc = NebulaApi.instance.setSetting('vault_init_sentinel', '1');
+           if (writeRc != 0) {
+              print('[Auth] CRITICAL: DB Write FAILED ($writeRc). Vault is genuinely corrupted.');
+           }
+        }
 
-      state = state.copyWith(
-        status: AuthStateStatus.locked,
-        errorMessage: 'Invalid vault password.',
-      );
+        if (_repository.currentAuthState?['@type'] == 'authorizationStateReady') {
+           _initVaultAnchoring(manualMnemonic: mnemonic);
+        }
+        
+        print('[Auth] Triggering Sync Engine Pull asynchronously...');
+        SyncEngine().pull(silent: true, ignoreThreats: true);
+
+        // Async Parity check: did the password change remotely?
+        final parityAnchorService = VaultAnchorService();
+        final parityChannelId = await parityAnchorService.findNebulaChannel();
+        if (parityChannelId != null) {
+          final metadata = await parityAnchorService.getCloudMetadata(parityChannelId);
+          if (metadata != null) {
+            try {
+              final cleanSalt = metadata['Salt']!.split('\n').first.split('#').first.trim();
+              final cleanIv = metadata['IV']!.split('\n').first.split('#').first.trim();
+              final cleanEnc = metadata['EncMnemonic']!.split('\n').first.split('#').first.trim();
+              
+              final salt = Uint8List.fromList(hex.decode(cleanSalt));
+              final iv = Uint8List.fromList(hex.decode(cleanIv));
+              final encMnemonic = Uint8List.fromList(hex.decode(cleanEnc));
+              
+              final key = await CryptoUtils.pbkdf2Async(password: password, salt: salt, iterations: 600000);
+              final dec = CryptoUtils.aesGcmDecrypt(encMnemonic, key, iv);
+              
+              if (dec == null) {
+                print('[Auth] SHIELD 2: Local opened, but Cloud rejected it. Password changed remotely!');
+                NebulaApi.instance.cleanup();
+                state = state.copyWith(status: AuthStateStatus.locked, errorMessage: 'Password changed remotely. Enter new password.');
+              }
+            } catch (e) {
+              print('[Auth] Background Cloud Parity Check ERROR: $e');
+            }
+          }
+        }
+      });
+      return;
+      
+    } else {
+      // 2. INSTANT FAILURE PATH
+      print('[Auth] Local Vault Unlock FAILED (code: $result). Yielding to UI instantly.');
+      state = state.copyWith(status: AuthStateStatus.locked, errorMessage: 'Invalid vault password.');
+      
+      // Async Two-Way Shield for Remote Password Changes
+      Future(() async {
+        print('[Auth] Running Background Fast Cloud Verification for Failure Case...');
+        final anchorService = VaultAnchorService();
+        final channelId = await anchorService.findNebulaChannel();
+        
+        if (channelId != null) {
+          final metadata = await anchorService.getCloudMetadata(channelId);
+          if (metadata != null) {
+            try {
+              final cleanSalt = metadata['Salt']!.split('\n').first.split('#').first.trim();
+              final cleanIv = metadata['IV']!.split('\n').first.split('#').first.trim();
+              final cleanEnc = metadata['EncMnemonic']!.split('\n').first.split('#').first.trim();
+              
+              final salt = Uint8List.fromList(hex.decode(cleanSalt));
+              final iv = Uint8List.fromList(hex.decode(cleanIv));
+              final encMnemonic = Uint8List.fromList(hex.decode(cleanEnc));
+              
+              final key = await CryptoUtils.pbkdf2Async(password: password, salt: salt, iterations: 600000);
+              final dec = CryptoUtils.aesGcmDecrypt(encMnemonic, key, iv);
+              
+              if (dec != null) {
+                // SHIELD 1: Local failed, but Cloud accepted it!
+                print('[Auth] SHIELD 1: Remote password change detected! Wiping obsolete local DB...');
+                NebulaApi.instance.cleanup();
+                final dbFile = File(dbPath);
+                if (dbFile.existsSync()) dbFile.deleteSync();
+
+                await restoreWithCloudPassword(password);
+              } else {
+                 // Genuine bad password, nothing to do since UI already shows error
+                 print('[Auth] Shield 1 background check confirms bad password.');
+              }
+            } catch (e) {
+              print('[Auth] Background Cloud decryption failed: $e');
+            }
+          }
+        } else if (result == 26) {
+           // Database is genuinely corrupted/missing and we have no cloud anchor
+           print('[Auth] UNRECOVERABLE: Local DB is NOTADB and Cloud is Empty. Wiping local state for fresh start.');
+           if (File(dbPath).existsSync()) File(dbPath).deleteSync();
+           await anchorService.clearLocalAnchor();
+           state = state.copyWith(status: AuthStateStatus.locked, errorMessage: 'Vault corrupted. Refreshing.');
+        }
+      });
     }
   }
 
@@ -1142,6 +931,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
           masterKey: 'MNEMONIC_RECOVERED',
           sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
         );
+        
+        // Save password for future biometric access
+        await SecretStore.saveVaultPassword(password);
+        
         print('[Auth] STATE SET TO READY. Triggering initial VFS pull...');
         SyncEngine().pull();
       } else {
@@ -1161,11 +954,48 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  void logOut() {
-    print('[Auth] Manual LogOut triggered (Session destruction).');
+  /// Locks the vault: closes C++ DB, clears RAM secrets, preserves Telegram session.
+  /// This is what the user expects when they press "Logout".
+  void lockVault() {
+    debugPrint('[Auth] Locking vault (preserving DB and Telegram session)...');
+    if (NebulaApi.instance.isInitialized) {
+      NebulaApi.instance.cleanup();
+    }
+    _tempMnemonic = null;
+    _tempUnlockPassword = null;
+    if (mounted) {
+      state = AuthState.locked(
+        sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
+      );
+    }
+    debugPrint('[Auth] Vault locked. DB and Telegram session preserved.');
+  }
+
+  /// Destroys the entire account: wipes DB, clears Telegram session, resets to initial.
+  /// Only used for "Start Fresh" / account reset scenarios.
+  Future<void> destroyAccount() async {
+    debugPrint('[Auth] Destroying account (full wipe)...');
+    try {
+      _repository.logOut();
+      await _wipeVault();
+      if (mounted) {
+        state = const AuthState.initial();
+      }
+    } catch (e) {
+      debugPrint('[Auth] Destroy account error: $e');
+    }
+  }
+
+  /// Cancels a pending login: ends the TDLib auth session so the user can
+  /// re-enter their phone number. Does NOT touch the vault DB or prefs.
+  /// Used only by "Change Number" / "Back" during the auth flow.
+  void cancelLogin() {
+    debugPrint('[Auth] Cancelling login (ending TDLib auth session)...');
     _repository.logOut();
     _isAnchoring = false;
-    state = const AuthState.initial();
+    if (mounted) {
+      state = const AuthState.initial();
+    }
   }
 
   void triggerRecovery() async {
@@ -1320,10 +1150,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = const AuthState.needsVaultSetup();
   }
   
-  void setManualChatId(int id) {
-    print('[Auth] Setting Manual Chat ID: $id');
-    state = state.copyWith(manualChatId: id);
-  }
+
 
   void forceRestoreState() {
     print('[Auth] Manual Force Sync requested. Transitioning to Restore screen.');
@@ -1357,5 +1184,13 @@ class AuthNotifier extends StateNotifier<AuthState> {
         sessionTimestamp: ts,
       );
     }
+  }
+
+  void resetInitialization() {
+    debugPrint('[Auth] Resetting full initialization state...');
+    state = const AuthState.initial();
+    _isAnchoring = false;
+    _isRestoring = false;
+    _isCloudChecking = false;
   }
 }

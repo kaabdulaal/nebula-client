@@ -66,7 +66,7 @@ class _CartridgeSetupScreenState extends ConsumerState<CartridgeSetupScreen> {
       }
 
       if (creds != null) {
-        print('[CartridgeSetup] Injecting credentials: ${creds.apiId}');
+        debugPrint('[CartridgeSetup] Injecting credentials: ${creds.apiId}');
         final docsDir = await getNebulaDocumentsDirectory();
         final dbPath = p.join(docsDir.path, 'nebula_tdlib');
         await TelegramService().init(apiId: creds.apiId, apiHash: creds.apiHash, dbPath: dbPath);

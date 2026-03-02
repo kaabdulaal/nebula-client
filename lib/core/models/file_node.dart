@@ -75,7 +75,7 @@ class FileNode {
       size: json['size'] as int? ?? 0,
       mimeType: json['mime_type'] as String? ?? 'application/octet-stream',
       manifestMsgId: json['manifest_msg_id'] as int?,
-      createdAt: DateTime.now(), // SQL doesn't return this yet, but we have it in the table
+      createdAt: DateTime.now(), 
       modifiedAt: DateTime.now(),
     );
   }

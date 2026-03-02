@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/providers/initialization_provider.dart';
+import '../../core/auth/auth_provider.dart';
+import '../settings/dialogs/proxy_settings_dialog.dart';
 
 class SplashScreen extends ConsumerWidget {
   const SplashScreen({super.key});
@@ -92,9 +94,33 @@ class SplashScreen extends ConsumerWidget {
             style: const TextStyle(color: Colors.white70),
           ),
           const SizedBox(height: 24),
-          ElevatedButton(
-            onPressed: () => ref.refresh(initializationProvider),
-            child: const Text('Retry'),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              OutlinedButton.icon(
+                onPressed: () {
+                  showDialog(
+                    context: context,
+                    builder: (context) => const ProxySettingsDialog(),
+                  );
+                },
+                icon: const Icon(Icons.settings_ethernet),
+                label: const Text('Proxy'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white70,
+                  side: const BorderSide(color: Colors.white24),
+                ),
+              ),
+              const SizedBox(width: 16),
+              ElevatedButton(
+                onPressed: () {
+                  // Use resetInitialization if possible, otherwise refresh provider
+                  ref.read(authProvider.notifier).resetInitialization();
+                  final _ = ref.refresh(initializationProvider);
+                },
+                child: const Text('Retry'),
+              ),
+            ],
           ),
         ],
       ),

@@ -1,0 +1,67 @@
+evaluation warning: 'hostPlatform' has been renamed to/replaced by 'stdenv.hostPlatform'
+/tmp/nix-shell.KElv9L: line 2650: nebula_client/android/local.properties: No such file or directory
+/tmp/nix-shell.KElv9L: line 2651: nebula_client/android/local.properties: No such file or directory
+/tmp/nix-shell.KElv9L: line 2652: nebula_client/android/local.properties: No such file or directory
+🌌 NEBULA HEAVY ENVIRONMENT READY
+Resolving dependencies...
+Downloading packages...
+  _fe_analyzer_shared 85.0.0 (97.0.0 available)
+  analyzer 7.6.0 (11.0.0 available)
+  analyzer_plugin 0.13.4 (0.14.5 available)
+  build 2.5.4 (4.0.4 available)
+  build_config 1.1.2 (1.3.0 available)
+  build_resolvers 2.5.4 (3.0.4 available)
+  build_runner 2.5.4 (2.11.1 available)
+  build_runner_core 9.1.2 (9.3.2 available)
+  built_value 8.12.3 (8.12.4 available)
+  custom_lint 0.7.6 (0.8.1 available)
+  custom_lint_builder 0.7.6 (0.8.1 available)
+  custom_lint_core 0.7.5 (0.8.2 available)
+  custom_lint_visitor 1.0.0+7.7.0 (1.0.0+9.0.0 available)
+  dart_style 3.1.1 (3.1.6 available)
+  flutter_lints 4.0.0 (6.0.0 available)
+  flutter_riverpod 2.6.1 (3.2.1 available)
+  go_router 14.8.1 (17.1.0 available)
+  js 0.6.7 (0.7.2 available)
+  json_annotation 4.10.0 (4.11.0 available)
+  lints 4.0.0 (6.1.0 available)
+  matcher 0.12.18 (0.12.19 available)
+  meta 1.17.0 (1.18.1 available)
+  pointycastle 3.9.1 (4.0.0 available)
+  riverpod 2.6.1 (3.2.1 available)
+  riverpod_annotation 2.6.1 (4.0.2 available)
+  riverpod_generator 2.6.5 (4.0.3 available)
+  riverpod_lint 2.6.5 (3.1.3 available)
+  screen_retriever 0.1.9 (0.2.0 available)
+  share_plus 10.1.4 (12.0.1 available)
+  share_plus_platform_interface 5.0.2 (6.1.0 available)
+  shared_preferences_android 2.4.20 (2.4.21 available)
+  source_gen 2.0.0 (4.2.0 available)
+  test_api 0.7.8 (0.7.10 available)
+  uuid 4.5.2 (4.5.3 available)
+  win32 5.15.0 (6.0.0 available)
+  window_manager 0.3.9 (0.5.1 available)
+Got dependencies!
+36 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+Analyzing nebula_client...                                      
+
+   info • 'encryptedSharedPreferences' is deprecated and shouldn't be used. EncryptedSharedPreferences is deprecated and will be removed in v11. The Jetpack Security library is deprecated by Google. Your data will be automatically migrated to custom ciphers on first access. Remove this parameter - it will be ignored • lib/core/security/secret_store.dart:14:30 • deprecated_member_use
+warning • The operand can't be 'null', so the condition is always 'true' • lib/core/services/sync_engine.dart:213:27 • unnecessary_null_comparison
+warning • The left operand can't be null, so the right operand is never executed • lib/core/services/sync_engine.dart:533:37 • dead_null_aware_expression
+warning • The '!' will have no effect because the receiver can't be null • lib/core/services/vault_anchor_service.dart:567:45 • unnecessary_non_null_assertion
+warning • Unused import: '../../core/services/sync_engine.dart' • lib/features/explorer/explorer_screen.dart:12:8 • unused_import
+warning • The value of the local variable 'currentFolderName' isn't used • lib/features/explorer/explorer_screen.dart:36:11 • unused_local_variable
+warning • The value of the local variable 'currentPath' isn't used • lib/features/explorer/explorer_screen.dart:38:11 • unused_local_variable
+   info • Don't invoke 'print' in production code • scripts/encrypt_gist_config.dart:5:5 • avoid_print
+   info • Don't invoke 'print' in production code • scripts/encrypt_gist_config.dart:6:5 • avoid_print
+   info • Don't invoke 'print' in production code • scripts/encrypt_gist_config.dart:15:5 • avoid_print
+   info • Don't invoke 'print' in production code • scripts/encrypt_gist_config.dart:36:3 • avoid_print
+   info • Don't invoke 'print' in production code • scripts/encrypt_gist_config.dart:37:3 • avoid_print
+   info • Don't invoke 'print' in production code • scripts/encrypt_gist_config.dart:38:3 • avoid_print
+   info • Don't invoke 'print' in production code • scripts/encrypt_gist_config.dart:39:3 • avoid_print
+warning • Unused import: 'dart:convert' • test/sync_logic_test.dart:1:8 • unused_import
+warning • The method doesn't override an inherited method • test/sync_logic_test.dart:18:16 • override_on_non_overriding_member
+warning • The value of the local variable 'meta' isn't used • test/sync_logic_test.dart:100:13 • unused_local_variable
+
+17 issues found. (ran in 1.3s)

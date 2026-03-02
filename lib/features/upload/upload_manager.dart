@@ -1,8 +1,9 @@
 import 'dart:io';
 import 'dart:convert';
-import 'dart:typed_data';
 import 'dart:ffi' as ffi;
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:nebula_core/nebula_core.dart';
 import '../../core/models/file_manifest.dart';
 import '../../core/services/vault_anchor_service.dart';
@@ -25,7 +26,7 @@ class UploadManager {
     bool allowed = await anchorService.canUpload(chatId);
     if (allowed) return;
 
-    print('[UploadManager] Permission denied on first check. Refreshing chat state and retrying in 2s...');
+    debugPrint('[UploadManager] Permission denied on first check. Refreshing chat state and retrying in 2s...');
     
     await telegram.getChat(chatId);
     await Future.delayed(const Duration(seconds: 2));
@@ -36,11 +37,11 @@ class UploadManager {
           'Internal TDLib permissions might be stale.');
     }
     
-    print('[UploadManager] Permission granted after retry/refresh.');
+    debugPrint('[UploadManager] Permission granted after retry/refresh.');
   }
 
   static Future<void> clearOrphanedTempFiles() async {
-    final tempDir = Directory.systemTemp;
+    final tempDir = await getTemporaryDirectory();
     try {
       final files = tempDir.listSync();
       for (final file in files) {
@@ -48,9 +49,9 @@ class UploadManager {
           await file.delete();
         }
       }
-      print('[UploadManager] Orphaned temp files cleared.');
+      debugPrint('[UploadManager] Orphaned temp files cleared.');
     } catch (e) {
-      print('[UploadManager] Cleanup error: $e');
+      debugPrint('[UploadManager] Cleanup error: $e');
     }
   }
 
@@ -63,7 +64,8 @@ class UploadManager {
     required Uint8List baseIv,
     required Uint8List fek,
   }) async {
-    final tempPath = '${Directory.systemTemp.path}/upload_temp_${fileId}_$chunkIndex.enc';
+    final tempDir = await getTemporaryDirectory();
+    final tempPath = '${tempDir.path}/upload_temp_${fileId}_$chunkIndex.enc';
     final tempFile = File(tempPath);
     if (await tempFile.exists()) await tempFile.delete();
 

@@ -5,7 +5,6 @@ import 'package:go_router/go_router.dart';
 import 'package:flutter/services.dart';
 import '../../core/api/nebula_api.dart';
 import '../../core/auth/auth_provider.dart';
-import '../../core/auth/auth_state.dart';
 import '../../core/utils/crypto_utils.dart';
 
 final onboardingSeedProvider = StateProvider<List<String>?>((ref) => null);
@@ -67,7 +66,6 @@ class _SeedScreenState extends ConsumerState<SeedScreen> {
   }
 
   @override
-  @override
   Widget build(BuildContext context) {
     final seed = ref.watch(onboardingSeedProvider);
     return Scaffold(
@@ -78,10 +76,10 @@ class _SeedScreenState extends ConsumerState<SeedScreen> {
       ),
       body: SafeArea(
         child: seed == null
-            ? Center(
+            ? const Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
-                  children: const [
+                  children: [
                     CircularProgressIndicator(),
                     SizedBox(height: 16),
                     Text('Generating secure seed...',

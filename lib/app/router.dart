@@ -8,18 +8,18 @@ import '../features/splash/splash_screen.dart';
 import '../features/onboarding/welcome_screen.dart';
 import '../features/auth/auth_screen.dart';
 import '../features/auth/master_pass_screen.dart';
-import '../features/auth/login_screen.dart';
 import '../features/onboarding/setup_screen.dart';
 import '../features/onboarding/seed_screen.dart';
 import '../features/onboarding/seed_verification_screen.dart';
 import '../features/onboarding/restore_wallet_screen.dart';
 import '../features/onboarding/cloud_restore_screen.dart';
+import '../features/onboarding/cloud_unlock_screen.dart';
 import '../features/onboarding/cartridge_setup_screen.dart';
 import '../features/onboarding/onboarding_screen.dart';
 import '../features/explorer/explorer_screen.dart';
+import '../features/lock/lock_screen.dart';
 import '../features/telegram/telegram_test_screen.dart';
 import '../features/settings/screens/api_settings_screen.dart';
-import '../features/vault_unlock/vault_unlock_screen.dart';
 import '../features/auth/sync_conflict_screen.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -59,15 +59,16 @@ final routerProvider = Provider<GoRouter>((ref) {
       }
 
       if (auth.status == AuthStateStatus.locked) {
-        const allowed = ['/login', '/restore-wallet'];
+        const allowed = ['/lock', '/restore-wallet'];
         if (allowed.contains(location)) return null;
-        return '/login';
+        debugPrint('[Router] Redirecting to /lock (Session Locked)');
+        return '/lock';
       }
 
       if (auth.status == AuthStateStatus.vaultCorrupted) {
-        const allowed = ['/login', '/restore-wallet', '/cloud-restore'];
+        const allowed = ['/lock', '/restore-wallet', '/cloud-restore'];
         if (allowed.contains(location)) return null;
-        return '/login';
+        return '/lock';
       }
 
       const onboardingPaths = [
@@ -105,14 +106,22 @@ final routerProvider = Provider<GoRouter>((ref) {
 
       if (auth.status == AuthStateStatus.needsRestore) {
         const restoreRoutes = [
-          '/cloud-restore',
           '/restore-wallet',  
           '/master_pass',     
           '/seed_intro',
           '/seed_verify',
         ];
         if (restoreRoutes.contains(location)) return null;
-        return '/cloud-restore';
+        return '/restore-wallet';
+      }
+
+      if (auth.status == AuthStateStatus.needsCloudUnlock) {
+        const cloudUnlockRoutes = [
+          '/cloud-unlock',
+          '/restore-wallet',
+        ];
+        if (cloudUnlockRoutes.contains(location)) return null;
+        return '/cloud-unlock';
       }
       if (auth.status == AuthStateStatus.syncRequired) {
         if (location == '/sync-conflict') return null;
@@ -134,16 +143,18 @@ final routerProvider = Provider<GoRouter>((ref) {
           '/seed_verify',
           '/restore-wallet',
           '/cloud-restore',
+          '/cloud-unlock',
           '/sync-conflict',
         ];
 
-        if ((authorizedRoutes.contains(location) || location == '/login') && isCoreOpen) {
+        final isGateway = location == '/login' || location == '/welcome' || location == '/';
+        if (isGateway && isCoreOpen) {
           return '/home';
         }
 
         if (authorizedRoutes.contains(location) && !isCoreOpen) {
           debugPrint('[Router] Blocked access to $location: Core is not initialized.');
-          return '/login';
+          return '/lock';
         }
 
         if (onboardingOrRestoreRoutes.contains(location) && !isCoreOpen) {
@@ -158,7 +169,7 @@ final routerProvider = Provider<GoRouter>((ref) {
           return null;
         }
 
-        return isCoreOpen ? '/home' : '/login';
+        return isCoreOpen ? '/home' : '/lock';
       }
 
       if (auth.status == AuthStateStatus.initial) {
@@ -178,6 +189,7 @@ final routerProvider = Provider<GoRouter>((ref) {
         final liveScreens = [
           '/login', 
           '/cloud-restore', 
+          '/cloud-unlock',
           '/restore-wallet', 
           '/auth', 
           '/master_pass',
@@ -214,11 +226,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/login',
-        builder: (context, state) => const LoginScreen(),
+        builder: (context, state) => const LockScreen(),
       ),
       GoRoute(
-        path: '/vault_unlock',
-        builder: (context, state) => const VaultUnlockScreen(),
+        path: '/lock',
+        builder: (context, state) => const LockScreen(),
       ),
       GoRoute(
         path: '/setup_password',
@@ -243,6 +255,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/cloud-restore',
         builder: (context, state) => const CloudRestoreScreen(),
+      ),
+      GoRoute(
+        path: '/cloud-unlock',
+        builder: (context, state) => const CloudUnlockScreen(),
       ),
       GoRoute(
         path: '/sync-conflict',

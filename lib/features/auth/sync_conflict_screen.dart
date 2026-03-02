@@ -78,7 +78,7 @@ class SyncConflictScreen extends ConsumerWidget {
                 ),
               const SizedBox(height: 16),
               TextButton(
-                onPressed: () => ref.read(authProvider.notifier).logOut(),
+                onPressed: () => ref.read(authProvider.notifier).lockVault(),
                 child: const Text(
                   'Log Out',
                   style: TextStyle(color: Colors.white54),

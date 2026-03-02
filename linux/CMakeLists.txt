@@ -93,6 +93,11 @@ endif()
 function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_features(${TARGET} PUBLIC cxx_std_14)
   target_compile_options(${TARGET} PRIVATE -Wall -Werror)
+  # Suppress nlohmann/json deprecated literal operator warning (flutter_secure_storage_linux)
+  target_compile_options(${TARGET} PRIVATE -Wno-deprecated-literal-operator)
+  # Force GLIBC 2.42 for symbols like __inet_pton_chk required by libgcrypt/libgpg-error
+  # This path matches our Nix environment's glibc 2.42 store path.
+  target_link_options(${TARGET} PRIVATE "-L/nix/store/wb6rhpznjfczwlwx23zmdrrw74bayxw4-glibc-2.42-47/lib")
   target_compile_options(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-O3>")
   target_compile_definitions(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:NDEBUG>")
 endfunction()

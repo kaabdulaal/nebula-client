@@ -4,14 +4,37 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:file_picker/file_picker.dart';
 import '../upload/upload_provider.dart';
-import '../upload/upload_button.dart';
-import '../../core/api/nebula_api.dart';
 import '../../core/auth/auth_provider.dart';
-import '../../core/auth/auth_state.dart';
 import './explorer_provider.dart';
+import './folder_picker_dialog.dart';
 import '../../core/models/file_node.dart';
-import '../../core/services/sync_engine.dart';
 import '../transfers/download_orchestrator.dart';
+import '../../core/services/transfer_service.dart';
+import '../../core/models/transfer_progress.dart';
+
+/// Returns MIME-type-aware icon data for file items.
+({IconData icon, Color color}) _getFileIcon(String mimeType) {
+  if (mimeType.startsWith('image/')) {
+    return (icon: Icons.image, color: Colors.green);
+  }
+  if (mimeType.startsWith('video/')) {
+    return (icon: Icons.videocam, color: Colors.purple);
+  }
+  if (mimeType.startsWith('audio/')) {
+    return (icon: Icons.audiotrack, color: Colors.teal);
+  }
+  if (mimeType == 'application/pdf') {
+    return (icon: Icons.picture_as_pdf, color: Colors.red);
+  }
+  if (mimeType.contains('zip') ||
+      mimeType.contains('tar') ||
+      mimeType.contains('rar') ||
+      mimeType.contains('7z') ||
+      mimeType.contains('archive')) {
+    return (icon: Icons.archive, color: Colors.orange);
+  }
+  return (icon: Icons.insert_drive_file, color: Colors.blue);
+}
 
 class ExplorerScreen extends ConsumerStatefulWidget {
   const ExplorerScreen({super.key});
@@ -21,46 +44,93 @@ class ExplorerScreen extends ConsumerStatefulWidget {
 }
 
 class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
-  final Map<String, double> _downloadProgress = {};
-  final DownloadOrchestrator _orchestrator = DownloadOrchestrator();
-
   @override
   void initState() {
     super.initState();
-    _orchestrator.progressStream.listen((event) {
-      if (mounted) {
-        setState(() {
-          _downloadProgress.addAll(event);
-        });
+  }
+
+  Widget _buildLeading(
+      FileNode node,
+      bool isSelected,
+      bool isSelectionMode,
+      TransferProgress? transfer,
+      ExplorerState state,
+      ExplorerNotifier notifier) {
+    if (isSelectionMode) {
+      return Icon(
+        isSelected ? Icons.check_circle : Icons.radio_button_unchecked,
+        color: Colors.blue,
+      );
+    }
+
+    if (transfer != null) {
+      return SizedBox(
+        width: 24,
+        height: 24,
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          value: transfer.progress,
+          valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
+        ),
+      );
+    }
+
+    if (node.type == FileNodeType.folder) {
+      return const Icon(Icons.folder, color: Colors.amber);
+    }
+
+    if (node.mimeType.startsWith('image/')) {
+      final thumb = state.thumbnails[node.id];
+      if (thumb != null) {
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: Image.memory(
+            thumb,
+            width: 40,
+            height: 40,
+            fit: BoxFit.cover,
+            cacheWidth: 120, // Low-res for list view
+          ),
+        );
+      } else {
+        // Trigger load in next microtask to avoid build-time state changes
+        Future.microtask(() => notifier.loadThumbnail(node));
+        return const Icon(Icons.image, color: Colors.green);
       }
-    });
+    }
+
+    final meta = _getFileIcon(node.mimeType);
+    return Icon(meta.icon, color: meta.color);
   }
 
   @override
   Widget build(BuildContext context) {
-    final files = ref.watch(explorerProvider);
-    final syncEngine = ref.watch(syncEngineProvider);
+    final state = ref.watch(explorerProvider);
+    final notifier = ref.read(explorerProvider.notifier);
+    final files = state.files;
+    final isLoading = state.isLoading;
+    final isSelectionMode = state.isSelectionMode;
+    final selectedIds = state.selectedIds;
+    final canGoBack = state.canGoBack;
+    final currentFolderId = state.currentFolderId;
+    final showGlobalProgress = ref.watch(syncEngineProvider.select((s) => s.showGlobalProgress));
+    final transfers = ref.watch(transferServiceProvider);
+    final isNotRoot = currentFolderId != 'root';
     
-    // Listen for auth state changes
-    ref.listen(authProvider, (previous, next) {
-      if (next.status == AuthStateStatus.initial) {
-        print('[Explorer] Auth initial detected. Redirecting to Onboarding.');
-        context.go('/onboarding');
-      }
-    });
+    // Navigation is handled solely by GoRouter redirect — no manual ref.listen needed.
 
     return Scaffold(
       backgroundColor: const Color(0xFF1A1A1A),
       appBar: AppBar(
-        title: ref.watch(explorerProvider.notifier).isSelectionMode
-            ? Text('${ref.watch(explorerProvider.notifier).selectedIds.length} Selected')
-            : Text(ref.watch(explorerProvider.notifier).currentFolderName),
-        leading: ref.watch(explorerProvider.notifier).isSelectionMode
+        title: isSelectionMode
+            ? Text('${selectedIds.length} Selected')
+            : const _BreadcrumbWidget(),
+        leading: isSelectionMode
             ? IconButton(
                 icon: const Icon(Icons.close),
                 onPressed: () => ref.read(explorerProvider.notifier).clearSelection(),
               )
-            : (ref.watch(explorerProvider.notifier).canGoBack
+            : (canGoBack
                 ? IconButton(
                     icon: const Icon(Icons.arrow_back),
                     onPressed: () => ref.read(explorerProvider.notifier).goBack(),
@@ -68,7 +138,7 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
                 : null),
         backgroundColor: Colors.transparent,
         elevation: 0,
-        bottom: syncEngine.isSyncing 
+        bottom: (showGlobalProgress || isLoading)
           ? const PreferredSize(
               preferredSize: Size.fromHeight(2),
               child: LinearProgressIndicator(
@@ -78,8 +148,13 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
               ),
             )
           : null,
-        actions: ref.watch(explorerProvider.notifier).isSelectionMode
+        actions: isSelectionMode
             ? [
+                IconButton(
+                  icon: const Icon(Icons.drive_file_move, color: Colors.blueAccent, size: 28),
+                  tooltip: 'Move to folder',
+                  onPressed: () => _handleMove(context, ref),
+                ),
                 IconButton(
                   icon: const Icon(Icons.delete_forever, color: Colors.red, size: 28),
                   onPressed: () => _confirmDelete(context, ref),
@@ -91,41 +166,18 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
                   onPressed: () => ref.read(explorerProvider.notifier).refresh(),
                 ),
                 IconButton(
+                  icon: const Icon(Icons.settings),
+                  onPressed: () => context.push('/api_settings'),
+                ),
+                IconButton(
                   icon: const Icon(Icons.logout),
-                  onPressed: () {
-                     NebulaApi.instance.cleanup();
-                     context.go('/login');
-                  },
+                  onPressed: () => ref.read(authProvider.notifier).lockVault(),
                 ),
               ],
       ),
       body: Column(
         children: [
-          // Breadcrumbs Bar
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            width: double.infinity,
-            color: Colors.white.withOpacity(0.02),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  const Icon(Icons.home, size: 16, color: Colors.blueAccent),
-                  const SizedBox(width: 8),
-                  Text(
-                    ref.watch(explorerProvider.notifier).currentPath.isEmpty 
-                        ? 'Root' 
-                        : 'Root > ${ref.watch(explorerProvider.notifier).currentPath}',
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.6),
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+          // Path bar removed (replaced by interactive breadcrumbs in AppBar)
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: TextField(
@@ -135,7 +187,7 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
                 hintStyle: const TextStyle(color: Colors.white24),
                 prefixIcon: const Icon(Icons.search, color: Colors.white24),
                 filled: true,
-                fillColor: Colors.white.withOpacity(0.05),
+                fillColor: Colors.white.withValues(alpha: 0.05),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
                   borderSide: BorderSide.none,
@@ -148,19 +200,22 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
             ),
           ),
           Expanded(
-            child: files.isEmpty
+            child: files.isEmpty && !isLoading
           ? Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.folder_open,
-                      size: 64, color: Colors.white24),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Vault is empty',
-                    style: TextStyle(color: Colors.white54),
-                  ),
-                ],
+              child: Opacity(
+                opacity: 0.5,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(isNotRoot ? Icons.folder_open : Icons.cloud_off,
+                        size: 80, color: Colors.blueAccent),
+                    const SizedBox(height: 16),
+                    Text(
+                      isNotRoot ? 'This folder is empty' : 'Vault is empty',
+                      style: const TextStyle(color: Colors.white, fontSize: 16),
+                    ),
+                  ],
+                ),
               ),
             )
           : ListView.builder(
@@ -168,29 +223,40 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
               itemBuilder: (context, index) {
                 final node = files[index];
                 final isFolder = node.type == FileNodeType.folder;
-                final isSelected = ref.watch(explorerProvider.notifier).selectedIds.contains(node.id);
-                
+                final isSelected = selectedIds.contains(node.id);
+                final transfer = transfers[node.id];
+                final isTransferring = transfer != null;
+
                 return ListTile(
                   selected: isSelected,
-                  selectedTileColor: Colors.blue.withOpacity(0.1),
-                  leading: ref.watch(explorerProvider.notifier).isSelectionMode
-                    ? Icon(
-                        isSelected ? Icons.check_circle : Icons.radio_button_unchecked,
-                        color: Colors.blue,
-                      )
-                    : Icon(
-                        isFolder ? Icons.folder : Icons.insert_drive_file,
-                        color: isFolder ? Colors.amber : Colors.blue,
-                      ),
+                  selectedTileColor: Colors.blue.withValues(alpha: 0.1),
+                  leading: _buildLeading(node, isSelected, isSelectionMode, transfer, state, notifier),
                   title: Text(node.name,
                       style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500)),
-                  subtitle: Text(
-                    isFolder 
-                        ? 'Folder' 
-                        : '${(node.size / 1024).toStringAsFixed(1)} KB • ${node.syncStatus.name}',
-                    style: const TextStyle(color: Colors.white54, fontSize: 12),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        isFolder 
+                            ? 'Folder' 
+                            : (isTransferring 
+                                ? '${transfer.type == TransferType.upload ? 'Uploading' : 'Downloading'}... ${(transfer.progress * 100).toStringAsFixed(0)}%'
+                                : '${(node.size / 1024).toStringAsFixed(1)} KB • ${node.syncStatus.name}'),
+                        style: const TextStyle(color: Colors.white54, fontSize: 12),
+                      ),
+                      if (isTransferring)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4.0),
+                          child: LinearProgressIndicator(
+                            value: transfer.progress,
+                            minHeight: 2,
+                            backgroundColor: Colors.white10,
+                            valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
+                          ),
+                        ),
+                    ],
                   ),
-                  trailing: ref.watch(explorerProvider.notifier).isSelectionMode
+                  trailing: isSelectionMode || isTransferring
                     ? null
                     : Row(
                         mainAxisSize: MainAxisSize.min,
@@ -198,7 +264,7 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
                           if (!isFolder)
                             IconButton(
                               icon: const Icon(Icons.download, color: Colors.white38, size: 20),
-                              onPressed: () => _handleDownload(context, node),
+                              onPressed: () => _handleDownload(context, ref, node),
                             ),
                           IconButton(
                             icon: const Icon(Icons.delete_outline, color: Colors.white24, size: 20),
@@ -265,23 +331,31 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
     );
   }
 
-  Future<void> _handleDownload(BuildContext context, FileNode node) async {
+  Future<void> _handleDownload(BuildContext context, WidgetRef ref, FileNode node) async {
+    final vmk = ref.read(syncEngineProvider).masterKeySnapshot;
+    final orchestrator = DownloadOrchestrator(vmk: vmk);
     final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(
-      SnackBar(content: Text('Downloading ${node.name}...')),
-    );
     
     try {
-      await _orchestrator.startDownload(node);
-    } catch (e) {
-      messenger.hideCurrentSnackBar();
-      if (e.toString().contains('USER_CANCELLED')) return;
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text('Download failed: $e'),
-          backgroundColor: Colors.red,
-        ),
+      await orchestrator.startDownload(
+        node,
+        onProgress: (p) {
+          ref.read(transferServiceProvider.notifier).updateDownload(node.id, node.name, p);
+        },
       );
+      if (context.mounted) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Downloaded ${node.name}')),
+        );
+      }
+    } catch (e) {
+      if (e.toString() != 'Exception: USER_CANCELLED' && context.mounted) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Download failed: $e')),
+        );
+      }
+    } finally {
+      ref.read(transferServiceProvider.notifier).updateDownload(node.id, node.name, 1.0);
     }
   }
 
@@ -302,6 +376,9 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
             onPressed: () {
               ref.read(explorerProvider.notifier).deleteItem(node.id);
               Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('${node.name} deleted')),
+              );
             },
             child: const Text('Delete'),
           ),
@@ -387,12 +464,128 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () {
+              final count = ref.read(explorerProvider.notifier).selectedIds.length;
               ref.read(explorerProvider.notifier).deleteSelected();
               Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('$count items deleted')),
+              );
             },
             child: const Text('Delete'),
           ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _handleMove(BuildContext context, WidgetRef ref) async {
+    final selectedIds = ref.read(explorerProvider).selectedIds;
+    if (selectedIds.isEmpty) return;
+
+    final targetFolderId = await FolderPickerDialog.show(
+      context,
+      excludeIds: selectedIds,
+    );
+
+    if (targetFolderId == null || !context.mounted) return;
+
+    final result = await ref.read(explorerProvider.notifier).moveSelected(targetFolderId);
+    if (!context.mounted) return;
+
+    if (result == -2) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot move a folder into itself or its subfolder.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } else if (result > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$result item(s) moved successfully.')),
+      );
+    }
+  }
+}
+
+class _BreadcrumbWidget extends ConsumerWidget {
+  const _BreadcrumbWidget();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(explorerProvider);
+    final stack = state.navigationStack;
+    final folderNames = state.folderNames;
+    
+    List<Widget> crumbs = [];
+    
+    // Root
+    crumbs.add(
+      _Crumb(
+        name: 'Root',
+        isLast: stack.isEmpty && state.currentFolderId == 'root',
+        onTap: () => ref.read(explorerProvider.notifier).jumpToFolder('root'),
+      ),
+    );
+    
+    for (int i = 0; i < stack.length; i++) {
+        final id = stack[i];
+        if (id == 'root') continue; 
+        crumbs.add(const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 2.0),
+          child: Icon(Icons.chevron_right, size: 16, color: Colors.white24),
+        ));
+        crumbs.add(
+          _Crumb(
+            name: folderNames[id] ?? 'Folder',
+            isLast: false,
+            onTap: () => ref.read(explorerProvider.notifier).jumpToFolder(id),
+          ),
+        );
+    }
+    
+    if (state.currentFolderId != 'root') {
+      crumbs.add(const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 2.0),
+        child: Icon(Icons.chevron_right, size: 16, color: Colors.white24),
+      ));
+      crumbs.add(
+        _Crumb(
+          name: state.currentFolderName,
+          isLast: true,
+          onTap: null, 
+        ),
+      );
+    }
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(children: crumbs),
+    );
+  }
+}
+
+class _Crumb extends StatelessWidget {
+  final String name;
+  final bool isLast;
+  final VoidCallback? onTap;
+
+  const _Crumb({required this.name, required this.isLast, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(4),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 4.0),
+        child: Text(
+          name,
+          style: TextStyle(
+            color: isLast ? Colors.white : Colors.blueAccent,
+            fontWeight: isLast ? FontWeight.bold : FontWeight.normal,
+            fontSize: 16,
+          ),
+        ),
       ),
     );
   }

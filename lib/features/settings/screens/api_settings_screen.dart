@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:path/path.dart' as p;
 import '../../../core/repositories/credentials_repository.dart';
 import '../../../core/services/telegram_service.dart';
@@ -85,7 +86,13 @@ class _ApiSettingsScreenState extends ConsumerState<ApiSettingsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('API Credentials (Cartridge)')),
+      appBar: AppBar(
+        title: const Text('API Credentials (Cartridge)'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => context.pop(),
+        ),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [

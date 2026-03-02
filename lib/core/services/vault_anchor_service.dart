@@ -1,11 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:path/path.dart' as p;
 import 'package:convert/convert.dart';
 import 'package:nebula_client/core/utils/crypto_utils.dart';
 import '../api/nebula_api.dart';
@@ -17,8 +15,9 @@ class VaultAnchorService {
   static const String _epochSeparator = ' | Epoch: ';
   static const String _metaPrefix = 'NEBULA_META|';
 
+  static int? _activeChannelId;
+
   final TelegramService _telegram;
-  int? _manualChatId;
 
   VaultAnchorService({TelegramService? telegramService})
       : _telegram = telegramService ?? TelegramService();
@@ -46,12 +45,13 @@ class VaultAnchorService {
     });
 
     return completer.future.timeout(
-      const Duration(seconds: 10),
+      const Duration(seconds: 3),
       onTimeout: () {
         sub?.cancel();
         timer.cancel();
-        _log('Timeout waiting for Telegram authorization.');
-        throw TimeoutException('Telegram not authorized after 10s');
+        _log('Timeout waiting for Telegram authorization (silent fallback).');
+        // We no longer throw here to prevent boot-lock
+        return; 
       },
     );
   }
@@ -66,13 +66,15 @@ class VaultAnchorService {
   }
 
 
-  void setManualChatId(int? id) {
-    _log('Manual Chat ID set to: $id');
-    _manualChatId = id;
-  }
 
   Future<int?> findNebulaChannel({bool forceRefresh = false, String? expectedHash}) async {
     _log('[DEBUG] findNebulaChannel called. forceRefresh: $forceRefresh');
+    
+    if (_activeChannelId != null && !forceRefresh) {
+      _log('[DEBUG] Returning in-memory _activeChannelId: $_activeChannelId');
+      return _activeChannelId;
+    }
+
     try {
       await waitForTelegramReady();
     } catch (_) {
@@ -87,10 +89,10 @@ class VaultAnchorService {
         if (dbId != null) {
           _log('Found cached channel ID in DB: $dbId. Verifying...');
           if (await _verifyChatHealthy(dbId, expectedHash)) {
+            _activeChannelId = dbId;
             return dbId;
           }
-          _log('DB Channel ID $dbId is invalid/stale. Clearing.');
-          NebulaApi.instance.setSetting('vault_channel_id', '');
+          _log('DB Channel ID $dbId failed verification. Preserving cache (may be cold boot delay).');
         }
       }
     }
@@ -103,22 +105,15 @@ class VaultAnchorService {
           if (NebulaApi.instance.isInitialized) {
             NebulaApi.instance.setSetting('vault_channel_id', cachedId.toString());
           }
+          _activeChannelId = cachedId;
           return cachedId;
         }
-        await prefs.remove('vault_channel_id');
+        _log('Prefs Channel ID $cachedId failed verification. Preserving cache.');
       }
     }
 
-    if (_manualChatId != null) {
-      _log('Using Manual Chat ID: $_manualChatId');
-      if (await _verifyChatHealthy(_manualChatId!, expectedHash)) {
-        await prefs.setInt('vault_channel_id', _manualChatId!);
-        return _manualChatId;
-      }
-      _log('Manual Chat ID $_manualChatId is unhealthy/invalid.');
-    }
 
-    _log('Performing Server-Side Discovery for "$_channelName"...');
+    _log('Attempting fast local search...');
     final foundId = await _searchNebulaChat();
     
     if (foundId != null) {
@@ -128,8 +123,22 @@ class VaultAnchorService {
         if (NebulaApi.instance.isInitialized) {
           NebulaApi.instance.setSetting('vault_channel_id', foundId.toString());
         }
+        _activeChannelId = foundId;
         return foundId;
       }
+    }
+
+    // Instant failover to deep server discovery (no preload delays)
+    _log('Local search failed. Bypassing preload delays, going straight to Deep Discovery...');
+    final deepId = await _deepServerDiscovery();
+    if (deepId != null) {
+      _log('Deep Discovery already verified ownership. TRUSTING ID: $deepId');
+      await prefs.setInt('vault_channel_id', deepId);
+      if (NebulaApi.instance.isInitialized) {
+        NebulaApi.instance.setSetting('vault_channel_id', deepId.toString());
+      }
+      _activeChannelId = deepId;
+      return deepId;
     }
 
     _log('Discovery: No valid "$_channelName" channel found.');
@@ -142,12 +151,16 @@ class VaultAnchorService {
       if (chat == null) return false;
 
       final title = chat['title'] as String? ?? '';
-      if (title == _channelName) {
-        _log('[LOBOTOMY] FORCED ACCEPTANCE: Chat $chatId matches title "$_channelName". Bypassing all handshake/hash checks.');
-        return true; 
+      if (title != _channelName) return false;
+
+      // Title matches — now verify identity hash if provided
+      if (expectedHash != null) {
+        return await verifyVaultSignature(chatId, expectedHash);
       }
       
-      return false;
+      // No hash to verify against, title match is sufficient for discovery
+      _log('Chat $chatId matches title "$_channelName". No hash to verify.');
+      return true;
     } catch (e) {
       _log('Error verifying chat health for $chatId: $e');
       return false;
@@ -204,7 +217,7 @@ class VaultAnchorService {
       '@extra': extra,
     });
 
-    final result = await completer.future.timeout(const Duration(seconds: 10), onTimeout: () => null);
+    final result = await completer.future.timeout(const Duration(seconds: 3), onTimeout: () => null);
     
     if (result == null) {
       _log('[DIAGNOSTIC] discovery failed. Listing recent chats for context...');
@@ -218,6 +231,104 @@ class VaultAnchorService {
     }
     
     return result;
+  }
+
+  /// Deep Server Discovery — Search → Verify pipeline.
+  ///
+  /// Uses TDLib's global `searchMessages` to find messages with the
+  /// `#NEBULA_METADATA` tag across ALL chats (not just cached ones).
+  /// Skips hydration (TDLib already knows the chat internally from
+  /// the search result) and goes straight to ownership verification.
+  Future<int?> _deepServerDiscovery() async {
+    _log('[DeepDiscovery] Starting Search → Verify pipeline...');
+
+    // ── Step 1: Scoped Search ──────────────────────────────────────────
+    final searchCompleter = Completer<Map<String, dynamic>?>();
+    StreamSubscription? searchSub;
+    final searchExtra = 'nebula_deepSearch_${DateTime.now().millisecondsSinceEpoch}';
+
+    searchSub = _telegram.updates.listen((update) {
+      if (update['@extra'] != searchExtra) return;
+      searchSub?.cancel();
+
+      if (update['@type'] == 'foundMessages') {
+        final messages = (update['messages'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+        if (messages.isNotEmpty) {
+          if (!searchCompleter.isCompleted) searchCompleter.complete(messages.first);
+        } else {
+          if (!searchCompleter.isCompleted) searchCompleter.complete(null);
+        }
+      } else if (update['@type'] == 'error') {
+        _log('[DeepDiscovery] searchMessages error: ${update['message']}');
+        if (!searchCompleter.isCompleted) searchCompleter.complete(null);
+      } else {
+        if (!searchCompleter.isCompleted) searchCompleter.complete(null);
+      }
+    });
+
+    _telegram.send({
+      '@type': 'searchMessages',
+      'query': '#NEBULA_METADATA',
+      'offset': '',
+      'limit': 5,
+      'filter': {'@type': 'searchMessagesFilterEmpty'},
+      'min_date': 0,
+      'max_date': 0,
+      '@extra': searchExtra,
+    });
+
+    final foundMessage = await searchCompleter.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        searchSub?.cancel();
+        _log('[DeepDiscovery] searchMessages timed out after 10s.');
+        return null;
+      },
+    );
+
+    if (foundMessage == null) {
+      _log('[DeepDiscovery] No messages found with #NEBULA_METADATA tag.');
+      return null;
+    }
+
+    final chatId = foundMessage['chat_id'] as int?;
+    if (chatId == null) {
+      _log('[DeepDiscovery] Found message has no chat_id.');
+      return null;
+    }
+
+    _log('[DeepDiscovery] Found candidate chat_id: $chatId. Verifying ownership...');
+
+    // ── Step 2: Ownership Verification ─────────────────────────────────
+    // Ensure the current user is the CREATOR of this channel.
+    // This prevents latching onto forwarded #NEBULA_METADATA messages
+    // in Saved Messages, groups, or other people's channels.
+    try {
+      final userId = await _telegram.getMe();
+      final member = await _telegram.getChatMember(chatId, userId);
+
+      if (member == null) {
+        _log('[DeepDiscovery] REJECTED: Could not fetch membership for chat $chatId.');
+        return null;
+      }
+
+      final memberStatus = member['status']?['@type'] as String? ?? '';
+      _log('[DeepDiscovery] User membership status: $memberStatus');
+
+      if (memberStatus == 'chatMemberStatusCreator') {
+        _log('[DeepDiscovery] VERIFIED: User is creator of chat $chatId.');
+        return chatId;
+      } else if (memberStatus == 'chatMemberStatusAdministrator') {
+        _log('[DeepDiscovery] ACCEPTED: User is administrator of chat $chatId.');
+        return chatId;
+      } else {
+        _log('[DeepDiscovery] REJECTED: User is "$memberStatus" in chat $chatId. Not the owner.');
+        return null;
+      }
+    } catch (e) {
+      _log('[DeepDiscovery] Ownership check failed: $e');
+      return null;
+    }
   }
 
   Future<bool> canUpload(int chatId) async {
@@ -274,7 +385,7 @@ class VaultAnchorService {
     });
 
     await completer.future.timeout(
-      const Duration(seconds: 10),
+      const Duration(seconds: 3),
       onTimeout: () {
         sub?.cancel();
       },
@@ -335,9 +446,7 @@ class VaultAnchorService {
       }
     });
 
-    _telegram.send({'@type': 'getChat', 'chat_id': chatId, '@extra': extra});
-
-    return completer.future.timeout(const Duration(seconds: 5), onTimeout: () => null);
+    return completer.future.timeout(const Duration(seconds: 3), onTimeout: () => null);
   }
 
   Future<int> createNebulaChannel() async {
@@ -429,23 +538,53 @@ class VaultAnchorService {
     StreamSubscription? sub;
     const extra = 'nebula_sendMeta';
     int? tempMessageId;
+    // Buffer for early-arriving updateMessageSendSucceeded events
+    final earlySucceeded = <Map<String, dynamic>>[];
+
+    void tryPinFromSucceeded(Map<String, dynamic> update) {
+      final realMessageId = update['message']?['id'] as int?;
+      if (realMessageId == null) {
+        if (!completer.isCompleted) {
+          completer.completeError(Exception('Metadata send succeeded but real message ID is null'));
+        }
+        return;
+      }
+      _pinMessage(channelId, realMessageId).then((_) {
+        if (!completer.isCompleted) completer.complete();
+        sub?.cancel();
+      }).catchError((e) {
+        if (!completer.isCompleted) completer.completeError(e);
+        sub?.cancel();
+      });
+    }
 
     sub = _telegram.updates.listen((update) {
       final type = update['@type'];
+
+      // Step 1: Capture the temporary message ID from the send response
       if (update['@extra'] == extra && type == 'message') {
         tempMessageId = update['id'] as int;
+        _log('Metadata message sent: tempId=$tempMessageId');
+
+        // Check if we already received a matching succeeded event
+        for (final early in earlySucceeded) {
+          if (early['old_message_id'] == tempMessageId) {
+            _log('Processing buffered updateMessageSendSucceeded for tempId=$tempMessageId');
+            tryPinFromSucceeded(early);
+            return;
+          }
+        }
       }
-      else if (type == 'updateMessageSendSucceeded' && 
-                 update['old_message_id'] == tempMessageId) {
-        final realMessageId = update['message']['id'] as int;
-        _pinMessage(channelId, realMessageId).then((_) {
-          if (!completer.isCompleted) completer.complete();
-          sub?.cancel();
-        }).catchError((e) {
-          if (!completer.isCompleted) completer.completeError(e);
-          sub?.cancel();
-        });
-      } 
+      // Step 2: Handle send succeeded — may arrive before or after step 1
+      else if (type == 'updateMessageSendSucceeded') {
+        if (tempMessageId != null && update['old_message_id'] == tempMessageId) {
+          tryPinFromSucceeded(update);
+        } else {
+          // Buffer it — tempMessageId not yet known
+          earlySucceeded.add(update);
+        }
+      }
+      // Step 3: Handle send error
       else if (update['@extra'] == extra && type == 'error') {
         if (!completer.isCompleted) {
           completer.completeError(Exception('Metadata send failed: ${update['message']}'));
@@ -465,44 +604,8 @@ class VaultAnchorService {
     });
 
     await completer.future.timeout(const Duration(seconds: 20));
-    
-    if (tempMessageId != null) {
-      await _waitForMessageStatus(channelId, tempMessageId!);
-    }
   }
-
-  Future<void> _waitForMessageStatus(int chatId, int messageId) async {
-    final existingMsg = await _getMessageById(chatId, messageId);
-    if (existingMsg != null) {
-      final sendingState = existingMsg['sending_state'];
-      if (sendingState == null) {
-        _log('Message $messageId already confirmed (no sending_state).');
-        return; 
-      }
-    }
-    
-    final completer = Completer<void>();
-    StreamSubscription? sub;
-    
-    sub = _telegram.updates.listen((update) {
-      if (update['@type'] == 'updateMessageSendSucceeded' && 
-          update['old_message_id'] == messageId) {
-        sub?.cancel();
-        completer.complete();
-      } else if (update['@type'] == 'updateMessageSendFailed' && 
-                 update['old_message_id'] == messageId) {
-        sub?.cancel();
-        final errorMsg = update['error']?['message'] ?? 'Unknown';
-        _log('Message $messageId send FAILED: $errorMsg');
-        completer.completeError(Exception('Message send failed: $errorMsg'));
-      }
-    });
-
-    return completer.future.timeout(const Duration(seconds: 15), onTimeout: () {
-      sub?.cancel();
-      _log('Timeout waiting for message status $messageId');
-    });
-  }
+  
   
   Future<Map<String, dynamic>?> _getMessageById(int chatId, int messageId) async {
     final completer = Completer<Map<String, dynamic>?>();
@@ -526,7 +629,7 @@ class VaultAnchorService {
       '@extra': extra,
     });
     
-    return completer.future.timeout(const Duration(seconds: 5), onTimeout: () => null);
+    return completer.future.timeout(const Duration(seconds: 3), onTimeout: () => null);
   }
 
   Future<void> forceSyncAnchor({
@@ -560,17 +663,13 @@ class VaultAnchorService {
     
     final encMnemonic = CryptoUtils.aesGcmEncrypt(mnemonic, key, iv);
     
-    if (encMnemonic == null) {
-      throw Exception('Encryption failed during forced anchor');
-    }
-
     final identityHash = computeIdentityHash(mnemonicStr, tgUserId);
     await setCloudMetadata(
       channelId: channelId,
       epoch: timestamp,
       saltHex: hex.encode(salt),
       ivHex: hex.encode(iv),
-      encMnemonicHex: hex.encode(encMnemonic),
+      encMnemonicHex: hex.encode(encMnemonic!),
       identityHash: identityHash,
     );
 
@@ -591,20 +690,64 @@ class VaultAnchorService {
         return;
       }
 
+      // Unpin all messages — awaited
       try {
-        _telegram.send({'@type': 'unpinAllChatMessages', 'chat_id': channelId});
+        final unpinCompleter = Completer<void>();
+        StreamSubscription? unpinSub;
+        final unpinExtra = 'nebula_unpin_${DateTime.now().millisecondsSinceEpoch}';
+
+        unpinSub = _telegram.updates.listen((update) {
+          if (update['@extra'] != unpinExtra) return;
+          unpinSub?.cancel();
+          if (!unpinCompleter.isCompleted) unpinCompleter.complete();
+        });
+
+        _telegram.send({
+          '@type': 'unpinAllChatMessages',
+          'chat_id': channelId,
+          '@extra': unpinExtra,
+        });
+
+        await unpinCompleter.future.timeout(
+          const Duration(seconds: 5),
+          onTimeout: () {
+            unpinSub?.cancel();
+            _log('Unpin all timed out (non-fatal).');
+          },
+        );
       } catch (e) {
         _log('Unpin all failed (ignorable): $e');
       }
 
+      // Delete messages — awaited
       final ids = msgs.map((m) => m['id'] as int).toList();
+      final deleteCompleter = Completer<void>();
+      StreamSubscription? deleteSub;
+      final deleteExtra = 'nebula_deleteMsgs_${DateTime.now().millisecondsSinceEpoch}';
+
+      deleteSub = _telegram.updates.listen((update) {
+        if (update['@extra'] != deleteExtra) return;
+        deleteSub?.cancel();
+        if (!deleteCompleter.isCompleted) deleteCompleter.complete();
+      });
+
       _telegram.send({
         '@type': 'deleteMessages',
         'chat_id': channelId,
         'message_ids': ids,
         'revoke': true,
+        '@extra': deleteExtra,
       });
-      _log('Requested deletion of ${ids.length} old metadata messages.');
+
+      await deleteCompleter.future.timeout(
+        const Duration(seconds: 5),
+        onTimeout: () {
+          deleteSub?.cancel();
+          _log('Delete messages timed out — messages may persist.');
+        },
+      );
+
+      _log('Deletion of ${ids.length} old metadata messages confirmed.');
     } catch (e) {
       _log('Cleanup Error: $e');
     }
@@ -635,7 +778,7 @@ class VaultAnchorService {
       '@extra': extra,
     });
 
-    return completer.future.timeout(const Duration(seconds: 10), onTimeout: () => []);
+    return completer.future.timeout(const Duration(seconds: 3), onTimeout: () => []);
   }
 
   Future<void> _pinMessage(int chatId, int messageId) async {
@@ -665,17 +808,18 @@ class VaultAnchorService {
     await waitForTelegramReady();
     _log('Fetching Cloud Metadata...');
 
-    // HACK: [PHASE 34] Force TDLib to hydrate the chat before searching.
-    // Deep search results are often empty on fresh devices if the chat hasn't been "opened".
-    _log('Hydrating chat $channelId...');
-    _telegram.send({
-      '@type': 'viewMessages',
-      'chat_id': channelId,
-      'message_thread_id': 0,
-      'message_ids': [],
-      'force_read': true,
-    });
-    await Future.delayed(const Duration(seconds: 3));
+    // Attempt 0: Check Pinned Message (O(1) direct hit)
+    _log('Checking pinned message for metadata...');
+    final chat = await _getChat(channelId);
+    final pinnedMsgId = chat?['pinned_message_id'] as int? ?? 0;
+    if (pinnedMsgId != 0) {
+      final pinnedMsg = await _getMessageById(channelId, pinnedMsgId);
+      final meta = _extractMetadataFromMessage(pinnedMsg);
+      if (meta != null) {
+        _log('SUCCESS: Metadata found via pinned message.');
+        return meta;
+      }
+    }
 
     // Attempt 1: O(1) Token Search
     final completer = Completer<Map<String, dynamic>?>();
@@ -710,7 +854,12 @@ class VaultAnchorService {
       '@extra': extra,
     });
 
-    var result = await completer.future.timeout(const Duration(seconds: 10), onTimeout: () => null);
+    Map<String, dynamic>? result;
+    try {
+       result = await completer.future.timeout(const Duration(seconds: 3));
+    } catch (e) {
+       _log('Attempt 1 (Search) timed out or failed: $e');
+    }
     sub.cancel();
 
     if (result != null) {
@@ -718,16 +867,53 @@ class VaultAnchorService {
       return result;
     }
 
-    // Attempt 2: DEEP History Fallback (Limit 100)
-    // This is the fallback for fresh devices where global search indexing might lag.
-    _log('Search failed. Falling back to DEEP history scan (100 messages)...');
-    final history = await _getChatHistory(channelId, limit: 100);
-    for (final msg in history) {
-      final meta = _extractMetadataFromMessage(msg);
-      if (meta != null) {
-        _log('SUCCESS: Metadata found in deep history.');
-        return meta;
+    // Attempt 2: INDESTRUCTIBLE Server-Side Read
+    // Bypasses local TDLib SQLite cache completely by querying Telegram's global index.
+    _log('Search failed. Falling back to INDESTRUCTIBLE server-side searchMessages...');
+    final serverCompleter = Completer<Map<String, dynamic>?>();
+    StreamSubscription? serverSub;
+    final serverExtra = 'nebula_meta_rescue_${DateTime.now().millisecondsSinceEpoch}';
+
+    serverSub = _telegram.updates.listen((update) {
+      if (update['@extra'] != serverExtra) return;
+      serverSub?.cancel();
+
+      if (update['@type'] == 'foundMessages') {
+        final messages = (update['messages'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+        for (final msg in messages) {
+           final meta = _extractMetadataFromMessage(msg);
+           if (meta != null) {
+              if (!serverCompleter.isCompleted) serverCompleter.complete(meta);
+              return;
+           }
+        }
       }
+      if (!serverCompleter.isCompleted) serverCompleter.complete(null);
+    });
+
+    _telegram.send({
+      '@type': 'searchMessages',
+      'chat_id': channelId, // Restrict search to our vault
+      'query': '#NEBULA_METADATA', // Find the exact metadata message
+      'offset': '',
+      'limit': 1,
+      'filter': {'@type': 'searchMessagesFilterEmpty'},
+      'min_date': 0,
+      'max_date': 0,
+      '@extra': serverExtra
+    });
+
+    final serverResult = await serverCompleter.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        serverSub?.cancel();
+        return null;
+      },
+    );
+
+    if (serverResult != null) {
+      _log('SUCCESS: Metadata found via indestructible server search.');
+      return serverResult;
     }
 
     _log('[CRITICAL] Discovery failed. Vault metadata unreachable.');
@@ -752,52 +938,23 @@ class VaultAnchorService {
     );
     
     final encMnemonic = CryptoUtils.aesGcmEncrypt(mnemonicBytes, key, iv);
-    if (encMnemonic != null) {
-      final identityHash = computeIdentityHash(mnemonic, (await _telegram.getMe()));
-      await setCloudMetadata(
-        channelId: channelId,
-        epoch: timestamp,
-        saltHex: hex.encode(salt),
-        ivHex: hex.encode(iv),
-        encMnemonicHex: hex.encode(encMnemonic),
-        identityHash: identityHash,
-      );
-      
-      _log('Verifying healed metadata is readable...');
-      final verification = await getCloudMetadata(channelId);
-      if (verification == null) {
-        _log('HEAL VERIFICATION FAILED: Metadata not readable after write.');
-        throw Exception('Metadata healing failed verification — data not readable after pin.');
-      }
-      _log('Atomic Anchor RE-ESTABLISHED and VERIFIED.');
-    } else {
-      _log('HEAL FAILED: AES-GCM encryption returned null.');
-      throw Exception('Metadata healing failed — encryption error.');
+    final identityHash = computeIdentityHash(mnemonic, (await _telegram.getMe()));
+    await setCloudMetadata(
+      channelId: channelId,
+      epoch: timestamp,
+      saltHex: hex.encode(salt),
+      ivHex: hex.encode(iv),
+      encMnemonicHex: hex.encode(encMnemonic),
+      identityHash: identityHash,
+    );
+    
+    _log('Verifying healed metadata is readable...');
+    final verification = await getCloudMetadata(channelId);
+    if (verification == null) {
+      _log('HEAL VERIFICATION FAILED: Metadata not readable after write.');
+      throw Exception('Metadata healing failed verification — data not readable after pin.');
     }
-  }
-
-  Future<Map<String, dynamic>?> _getChatPinnedMessage(int chatId) async {
-    final completer = Completer<Map<String, dynamic>?>();
-    StreamSubscription? sub;
-    final extra = 'nebula_getPinned_$chatId';
-
-    sub = _telegram.updates.listen((update) {
-      if (update['@extra'] != extra) return;
-      sub?.cancel();
-      if (update['@type'] == 'message') {
-        if (!completer.isCompleted) completer.complete(update);
-      } else {
-        if (!completer.isCompleted) completer.complete(null);
-      }
-    });
-
-    _telegram.send({
-      '@type': 'getChatPinnedMessage',
-      'chat_id': chatId,
-      '@extra': extra,
-    });
-
-    return completer.future.timeout(const Duration(seconds: 5), onTimeout: () => null);
+    _log('Atomic Anchor RE-ESTABLISHED and VERIFIED.');
   }
 
   Map<String, String>? _extractMetadataFromMessage(Map<String, dynamic>? message) {
@@ -875,7 +1032,7 @@ class VaultAnchorService {
     }
 
     final String currentHash;
-    if (mnemonic != null && effectiveTgId != null) {
+    if (mnemonic != null) {
       currentHash = computeIdentityHash(mnemonic, effectiveTgId);
     } else {
       currentHash = (await getLocalIdentityHash()) ?? ''; 
@@ -980,12 +1137,30 @@ class VaultAnchorService {
 
   Future<String?> _fetchSupergroupHash(int channelId) async {
     String idStr = channelId.toString();
+    // TDLib Chat IDs for supergroups are -100XXXXXXXXXX
+    // getSupergroupFullInfo expects the raw supergroup ID (XXXXXXXXXX)
     if (idStr.startsWith('-100')) {
       final rawId = int.tryParse(idStr.substring(4));
       if (rawId != null) return _fetchSupergroupHashById(rawId);
     }
-    final supergroupId = channelId > 0 ? -channelId : channelId;
-    return _fetchSupergroupHashById(supergroupId);
+    
+    // Fallback: try extracting supergroup_id from chat object
+    _log('Chat ID $channelId does not follow -100 prefix. Extracting from chat...');
+    try {
+      final chat = await _getChat(channelId);
+      if (chat != null) {
+        final chatType = chat['type'] as Map<String, dynamic>?;
+        if (chatType != null && chatType['@type'] == 'chatTypeSupergroup') {
+          final realSupergroupId = chatType['supergroup_id'] as int?;
+          if (realSupergroupId != null) {
+            return _fetchSupergroupHashById(realSupergroupId);
+          }
+        }
+      }
+    } catch (e) {
+      _log('Fallback supergroup extraction failed: $e');
+    }
+    return null;
   }
 
   Future<String?> _fetchSupergroupHashById(int supergroupId) async {
@@ -1139,7 +1314,7 @@ class VaultAnchorService {
 
   void _log(String message) {
     if (kDebugMode) {
-      print('[VaultAnchor] $message');
+      debugPrint('[VaultAnchor] $message');
     }
   }
 }

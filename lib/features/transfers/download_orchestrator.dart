@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:nebula_client/core/api/nebula_api.dart';
 import 'package:nebula_client/core/models/file_manifest.dart';
 import 'package:nebula_client/core/models/file_node.dart';
@@ -15,16 +17,12 @@ class DownloadOrchestrator {
   final VaultAnchorService _anchor = VaultAnchorService();
   final NebulaApi _api = NebulaApi.instance;
 
-  final _progressController = StreamController<Map<String, double>>.broadcast();
-  Stream<Map<String, double>> get progressStream => _progressController.stream;
+  Uint8List? _vmk;
 
-  DownloadOrchestrator() {
-    _telegram.fileProgress.listen((event) {
-      final (fileId, progress) = event;
-      // We need to map TDLib fileId back to our nodeId if possible, 
-      // but for now we just broadcast all.
-      _progressController.add({fileId.toString(): progress});
-    });
+  DownloadOrchestrator({Uint8List? vmk}) : _vmk = vmk;
+
+  void setVmk(Uint8List key) {
+    _vmk = Uint8List.fromList(key);
   }
 
   Future<File> startDownload(FileNode node, {Function(double)? onProgress, String? hiddenSavePath}) async {
@@ -48,7 +46,6 @@ class DownloadOrchestrator {
     final encManifestPath = await _telegram.downloadFile(manifestFileId);
     _log('Manifest.enc downloaded to: $encManifestPath');
 
-    // BYPASS DECRYPTION FOR SYSTEM SNAPSHOT
     if (node.id == 'snapshot' || node.name == 'vfs_snapshot.enc') {
       _log('[SYSTEM] Bypassing standard decryption for VFS Snapshot.');
       final rawSnapshot = File(encManifestPath);
@@ -62,41 +59,29 @@ class DownloadOrchestrator {
       return rawSnapshot;
     }
 
-    final dummyVMK = Uint8List(32)..fillRange(0, 32, 0x42);
+    final vmk = _vmk;
+    if (vmk == null) {
+      throw Exception('Vault Master Key (VMK) is not set. Cannot decrypt files.');
+    }
+
     final encManifestBytes = await File(encManifestPath).readAsBytes();
-    
-    
 
-
-    
-    
-    
-    
-    
-    final manifestJson = await _decryptManifest(encManifestBytes, dummyVMK);
+    final manifestJson = await _decryptManifest(encManifestBytes, vmk);
     final manifest = FileManifest.fromJson(jsonDecode(manifestJson));
     _log('Manifest parsed. Total chunks: ${manifest.totalChunks}');
     
-    String? outputPath;
+    String outputPath;
     if (hiddenSavePath != null) {
-      // Headless mode for Sync Engine
       outputPath = hiddenSavePath;
     } else {
-      // Standard UI mode
-      outputPath = await FilePicker.platform.saveFile(
-        dialogTitle: 'Save Decrypted File',
-        fileName: node.name,
-      );
-      if (outputPath == null) {
-        throw Exception('USER_CANCELLED');
-      }
+      outputPath = await _resolveOutputPath(node.name);
     }
     
     final outputFile = File(outputPath);
     if (await outputFile.exists()) await outputFile.delete();
     await outputFile.create(recursive: true);
 
-    final fek = await _decryptFEK(manifest.cryptoMeta.encryptedFek);
+    final fek = await _decryptFEK(manifest.cryptoMeta.encryptedFek, vmk);
     _log('Output file prepared: $outputPath');
 
     for (int i = 0; i < manifest.totalChunks; i++) {
@@ -110,8 +95,21 @@ class DownloadOrchestrator {
       final chunkFileId = chunkContent?['document']?['document']?['id'] as int?;
       if (chunkFileId == null) throw Exception('Could not find fileId for chunk $i');
 
+      // Listen for raw file progress for this chunk if onProgress is provided
+      StreamSubscription? progressSub;
+      if (onProgress != null) {
+        progressSub = _telegram.fileProgress.listen((event) {
+          final (fId, p) = event;
+          if (fId == chunkFileId) {
+            final logicalProgress = (i / manifest.totalChunks) + (p / manifest.totalChunks);
+            onProgress(logicalProgress);
+          }
+        });
+      }
+
       final encChunkPath = await _telegram.downloadFile(chunkFileId);
-      
+      await progressSub?.cancel();
+
       final iv = manifest.getChunkIV(i);
       final aad = manifest.getChunkAAD(i);
       final tag = _hexToBytes(chunkMeta.tag);
@@ -139,11 +137,48 @@ class DownloadOrchestrator {
       await decryptedChunk.delete();
       await File(encChunkPath).delete();
       _log('Chunk $i appended and cleaned up.');
+      
+      if (onProgress != null) {
+        onProgress((i + 1) / manifest.totalChunks);
+      }
     }
 
     _log('Download complete: $outputPath');
+
+    if (!_isDesktop && hiddenSavePath == null) {
+      await _shareFileOnMobile(outputFile, node.name);
+    }
+
     return outputFile;
   }
+
+  Future<String> _resolveOutputPath(String fileName) async {
+    if (_isDesktop) {
+      final path = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save Decrypted File',
+        fileName: fileName,
+      );
+      if (path == null) throw Exception('USER_CANCELLED');
+      return path;
+    } else {
+      final tempDir = await getTemporaryDirectory();
+      return '${tempDir.path}/$fileName';
+    }
+  }
+
+  Future<void> _shareFileOnMobile(File file, String fileName) async {
+    try {
+      await Share.shareXFiles(
+        [XFile(file.path, name: fileName)],
+        subject: 'Nebula — $fileName',
+      );
+    } catch (e) {
+      _log('Share sheet failed: $e');
+    }
+  }
+
+  bool get _isDesktop =>
+      Platform.isLinux || Platform.isWindows || Platform.isMacOS;
 
   Future<String> _decryptManifest(Uint8List encrypted, Uint8List key) async {
     if (encrypted.length < 12) throw Exception('Manifest blob too short (missing IV).');
@@ -156,12 +191,11 @@ class DownloadOrchestrator {
     return utf8.decode(result);
   }
 
-  Future<Uint8List> _decryptFEK(String encryptedFek) async {
+  Future<Uint8List> _decryptFEK(String encryptedFek, Uint8List vmk) async {
     final parts = encryptedFek.split(':');
     final iv = _hexToBytes(parts[0]);
     final ciphertext = _hexToBytes(parts[1]);
-    final dummyVMK = Uint8List(32)..fillRange(0, 32, 0x42);
-    final result = _api.decryptChunk(ciphertext, dummyVMK, iv);
+    final result = _api.decryptChunk(ciphertext, vmk, iv);
     if (result == null) throw Exception('FEK decryption failed.');
     return Uint8List.fromList(result);
   }

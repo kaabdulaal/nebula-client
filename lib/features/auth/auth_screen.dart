@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../../core/auth/auth_provider.dart';
 import '../../core/auth/auth_state.dart';
+import '../settings/dialogs/proxy_settings_dialog.dart';
 
 class AuthScreen extends ConsumerStatefulWidget {
   const AuthScreen({super.key});
@@ -78,6 +79,18 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
         backgroundColor: Colors.transparent,
         elevation: 0,
         title: const Text('Telegram Login'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings_ethernet, color: Colors.white70),
+            tooltip: 'Proxy Settings',
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (context) => const ProxySettingsDialog(),
+              );
+            },
+          ),
+        ],
       ),
       body: AnimatedSwitcher(
         duration: const Duration(milliseconds: 280),
@@ -269,17 +282,44 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
               textAlign: TextAlign.center,
               style: const TextStyle(color: Colors.white),
             ),
-            const SizedBox(height: 24),
-            ElevatedButton(
-              onPressed: () => ref.read(authProvider.notifier).resetError(),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF0088CC),
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
+            if (state.errorMessage?.contains('Connection') ?? false) ...[
+              const SizedBox(height: 12),
+              const Text(
+                'Trouble connecting? Try adjusting Proxy settings in the top right menu.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white54, fontSize: 13),
               ),
-              child: const Text('Retry'),
+            ],
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                OutlinedButton(
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (context) => const ProxySettingsDialog(),
+                    );
+                  },
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white70,
+                    side: const BorderSide(color: Colors.white24),
+                  ),
+                  child: const Text('Proxy Settings'),
+                ),
+                const SizedBox(width: 16),
+                ElevatedButton(
+                  onPressed: () => ref.read(authProvider.notifier).resetError(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF0088CC),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Text('Retry'),
+                ),
+              ],
             ),
           ],
         ),
@@ -422,7 +462,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
             child: TextButton(
               onPressed: () {
                 _codeController.clear();
-                ref.read(authProvider.notifier).logOut();
+                ref.read(authProvider.notifier).cancelLogin();
               },
               child: const Text(
                 'Change Number',

@@ -1,13 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:path/path.dart' as p;
-import 'package:nebula_client/core/auth/auth_repository.dart';
-import 'package:nebula_client/core/repositories/credentials_repository.dart';
-import 'package:nebula_client/core/services/telegram_service.dart';
-import 'package:nebula_client/core/api/nebula_api.dart';
 import 'package:nebula_client/core/auth/auth_provider.dart';
-import 'package:nebula_client/core/auth/auth_state.dart';
 
 class MasterPassScreen extends ConsumerStatefulWidget {
   const MasterPassScreen({super.key});

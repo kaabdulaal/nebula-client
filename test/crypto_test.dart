@@ -10,13 +10,13 @@ void main() {
       dbFile.deleteSync();
     }
     
-    final mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
-    final password = 'mySecurePassword123';
+    const mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+    const password = 'mySecurePassword123';
 
-    final setupResult = await NebulaApi.instance.setPassword(dbPath, mnemonic, password);
+    final setupResult = await NebulaApi.instance.setPassword(mnemonic, password);
     expect(setupResult, 0, reason: 'Setup should succeed');
 
-    final unlockResult = await NebulaApi.instance.unlockWithPassword(dbPath, password);
+    final unlockResult = await NebulaApi.instance.unlockWithPassword(password);
     
     expect(unlockResult, 0, reason: 'Unlock should succeed but returns $unlockResult');
   });

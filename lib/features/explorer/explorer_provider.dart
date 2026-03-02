@@ -1,61 +1,135 @@
+import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/api/nebula_api.dart';
 import '../../core/models/file_node.dart';
 import '../../core/services/sync_engine.dart';
+import '../../core/services/thumbnail_service.dart';
 
 final syncEngineProvider = ChangeNotifierProvider<SyncEngine>((ref) {
   return SyncEngine();
 });
 
-final explorerProvider = StateNotifierProvider<ExplorerNotifier, List<FileNode>>((ref) {
-  final notifier = ExplorerNotifier();
-  // Listen for background sync updates to refresh UI instantly
-  ref.listen(syncEngineProvider, (previous, next) {
-    notifier.refresh();
+class ExplorerState {
+  final List<FileNode> files;
+  final bool isLoading;
+  final String currentFolderId;
+  final String currentFolderName;
+  final List<String> navigationStack;
+  final Set<String> selectedIds;
+  final Map<String, String> folderNames;
+  final Map<String, Uint8List> thumbnails;
+
+  const ExplorerState({
+    required this.files,
+    this.isLoading = false,
+    required this.currentFolderId,
+    required this.currentFolderName,
+    required this.navigationStack,
+    required this.selectedIds,
+    required this.folderNames,
+    this.thumbnails = const {},
   });
+
+  bool get isSelectionMode => selectedIds.isNotEmpty;
+  bool get canGoBack => navigationStack.isNotEmpty || currentFolderId != 'root';
+
+  String get currentPath =>
+      navigationStack.map((id) => folderNames[id] ?? '...').join(' > ');
+
+  ExplorerState copyWith({
+    List<FileNode>? files,
+    bool? isLoading,
+    String? currentFolderId,
+    String? currentFolderName,
+    List<String>? navigationStack,
+    Set<String>? selectedIds,
+    Map<String, String>? folderNames,
+    Map<String, Uint8List>? thumbnails,
+  }) {
+    return ExplorerState(
+      files: files ?? this.files,
+      isLoading: isLoading ?? this.isLoading,
+      currentFolderId: currentFolderId ?? this.currentFolderId,
+      currentFolderName: currentFolderName ?? this.currentFolderName,
+      navigationStack: navigationStack ?? this.navigationStack,
+      selectedIds: selectedIds ?? this.selectedIds,
+      folderNames: folderNames ?? this.folderNames,
+      thumbnails: thumbnails ?? this.thumbnails,
+    );
+  }
+}
+
+final explorerProvider = StateNotifierProvider<ExplorerNotifier, ExplorerState>((ref) {
+  final notifier = ExplorerNotifier();
+  Timer? debounce;
+  ref.listen(syncEngineProvider, (previous, next) {
+    debounce?.cancel();
+    debounce = Timer(const Duration(milliseconds: 300), () {
+      notifier.refresh();
+    });
+  });
+  ref.onDispose(() => debounce?.cancel());
   return notifier;
 });
 
-class ExplorerNotifier extends StateNotifier<List<FileNode>> {
-  String _currentFolderId = 'root';
-  String get currentFolderId => _currentFolderId;
+class ExplorerNotifier extends StateNotifier<ExplorerState> {
+  bool _isNavigating = false; 
 
-  final List<String> _navigationStack = [];
-  final Map<String, String> _folderNames = {'root': 'Root'};
-
-  final Set<String> _selectedIds = {};
-  Set<String> get selectedIds => _selectedIds;
-  bool get isSelectionMode => _selectedIds.isNotEmpty;
-
-  bool get canGoBack => _navigationStack.isNotEmpty;
-  String get currentPath => _navigationStack.map((id) => _folderNames[id] ?? '...').join(' > ');
-  String get currentFolderName => _folderNames[_currentFolderId] ?? 'Root';
-
-  ExplorerNotifier() : super([]) {
+  ExplorerNotifier() : super(const ExplorerState(
+    files: [],
+    currentFolderId: 'root',
+    currentFolderName: 'Root',
+    navigationStack: [],
+    selectedIds: {},
+    folderNames: {'root': 'Root'},
+  )) {
     _initRefresh();
   }
 
+  String get currentFolderId => state.currentFolderId;
+  Set<String> get selectedIds => state.selectedIds;
+  bool get isSelectionMode => state.isSelectionMode;
+  bool get canGoBack => state.canGoBack;
+  String get currentPath => state.currentPath;
+  String get currentFolderName => state.currentFolderName;
+
   Future<void> navigateToFolder(String id, String name) async {
-    await refresh(folderId: id, folderName: name);
+    if (_isNavigating) return; 
+    _isNavigating = true;
+    try {
+      final newStack = [...state.navigationStack, state.currentFolderId];
+      final newNames = {...state.folderNames, id: name};
+      state = state.copyWith(
+        currentFolderId: id,
+        currentFolderName: name,
+        navigationStack: newStack,
+        folderNames: newNames,
+        selectedIds: {},
+        isLoading: true,
+      );
+      await _fetchDirectory(id);
+    } finally {
+      _isNavigating = false;
+    }
   }
 
   void toggleSelection(String id) {
-    if (_selectedIds.contains(id)) {
-      _selectedIds.remove(id);
+    final current = {...state.selectedIds};
+    if (current.contains(id)) {
+      current.remove(id);
     } else {
-      _selectedIds.add(id);
+      current.add(id);
     }
-    state = List.from(state); // Trigger UI update
+    state = state.copyWith(selectedIds: current);
   }
 
   void clearSelection() {
-    _selectedIds.clear();
-    state = List.from(state);
+    state = state.copyWith(selectedIds: {});
   }
 
   Future<void> _initRefresh() async {
-    // Retry bridge initialization if needed
     for (int i = 0; i < 5; i++) {
        if (NebulaApi.instance.isInitialized) break;
        await Future.delayed(const Duration(milliseconds: 500));
@@ -65,63 +139,118 @@ class ExplorerNotifier extends StateNotifier<List<FileNode>> {
 
   Future<void> refresh({String? folderId, String? folderName}) async {
     if (!NebulaApi.instance.isInitialized) return;
-    
-    if (folderId != null && folderId != _currentFolderId) {
-      if (_currentFolderId != 'root' || folderId != 'root') {
-         _navigationStack.add(_currentFolderId);
-      }
-      _currentFolderId = folderId;
-      if (folderName != null) _folderNames[folderId] = folderName;
-      _selectedIds.clear(); // Clear selection on navigate
+
+    if (folderId != null && folderId != state.currentFolderId) {
+      await navigateToFolder(folderId, folderName ?? folderId);
+      return;
     }
-
-    final jsonStr = NebulaApi.instance.listDirectory(_currentFolderId);
-    final List<dynamic> decoded = jsonDecode(jsonStr);
     
-    final List<FileNode> nodes = decoded.map((item) {
-      return FileNode.fromSqlJson(Map<String, dynamic>.from(item));
-    }).toList();
+    state = state.copyWith(isLoading: true);
+    await _fetchDirectory(state.currentFolderId);
+  }
 
-    state = nodes;
+  Future<void> _fetchDirectory(String folderId) async {
+    try {
+      final jsonStr = NebulaApi.instance.listDirectory(folderId);
+      final nodes = await compute(_parseFileNodes, jsonStr);
+      state = state.copyWith(files: nodes, isLoading: false);
+    } catch (e) {
+      _log('Directory listing failed: $e');
+      state = state.copyWith(isLoading: false);
+    }
   }
 
   Future<void> createFolder(String name) async {
     try {
       final id = 'folder_${DateTime.now().millisecondsSinceEpoch}';
-      NebulaApi.instance.upsertFolder(id, _currentFolderId, name);
+      NebulaApi.instance.upsertFolder(id, state.currentFolderId, name);
+      
+      final node = FileNode(
+        id: id,
+        name: name,
+        parentId: state.currentFolderId,
+        type: FileNodeType.folder,
+        size: 0,
+        syncStatus: SyncStatus.synced,
+        mimeType: 'application/octet-stream',
+        createdAt: DateTime.now(),
+        modifiedAt: DateTime.now(),
+      );
+
+      // Instant Delta Push
+      await SyncEngine().broadcastManifest(node);
       SyncEngine().scheduleAutoPush();
       await refresh();
     } catch (e) {
-      print('[Explorer] Create folder failed: $e');
+      _log('Create folder failed: $e');
     }
   }
 
   Future<void> deleteSelected() async {
-    if (_selectedIds.isEmpty) return;
+    if (state.selectedIds.isEmpty) return;
     
-    final idsToRemove = _selectedIds.toList();
-    _selectedIds.clear();
-
-    // Optimistic UI update
-    state = state.where((node) => !idsToRemove.contains(node.id)).toList();
+    final idsToRemove = state.selectedIds.toList();
+    state = state.copyWith(
+      files: state.files.where((node) => !idsToRemove.contains(node.id)).toList(),
+      selectedIds: {},
+    );
 
     try {
       _log('Bulk Deleting ${idsToRemove.length} items...');
       
-      // 1. Core Deletion
       for (final id in idsToRemove) {
         NebulaApi.instance.deleteItem(id);
       }
 
-      // 2. Cloud Broadcast (Optimized)
       await SyncEngine().broadcastBulkTombstone(idsToRemove);
-
-      // 3. Schedule Snapshot
       SyncEngine().scheduleAutoPush();
     } catch (e) {
-      print('[Explorer] Bulk delete failed: $e');
-      await refresh(); // Revert on failure
+      _log('Bulk delete failed: $e');
+      await refresh(); 
     }
+  }
+
+  /// Move all selected items to [targetFolderId].
+  /// Returns the number of items moved, or -2 if a cyclic move was detected.
+  Future<int> moveSelected(String targetFolderId) async {
+    if (state.selectedIds.isEmpty) return 0;
+
+    final idsToMove = state.selectedIds.toList();
+    int moved = 0;
+    bool cyclicDetected = false;
+
+    for (final id in idsToMove) {
+      final rc = NebulaApi.instance.updateItemParent(id, targetFolderId);
+      if (rc == 0) {
+        moved++;
+        // Re-broadcast the moved item as a manifest update
+        final node = state.files.firstWhere(
+          (n) => n.id == id,
+          orElse: () => FileNode(
+            id: id, parentId: targetFolderId, type: FileNodeType.file,
+            syncStatus: SyncStatus.synced, name: '', size: 0,
+            mimeType: '', createdAt: DateTime.now(), modifiedAt: DateTime.now(),
+          ),
+        );
+        // Create updated node with new parent
+        final updatedNode = FileNode(
+          id: node.id, parentId: targetFolderId, type: node.type,
+          syncStatus: node.syncStatus, name: node.name, size: node.size,
+          mimeType: node.mimeType, manifestMsgId: node.manifestMsgId,
+          createdAt: node.createdAt, modifiedAt: DateTime.now(),
+        );
+        await SyncEngine().broadcastManifest(updatedNode);
+      } else if (rc == -2) {
+        cyclicDetected = true;
+      }
+    }
+
+    state = state.copyWith(selectedIds: {});
+    SyncEngine().scheduleAutoPush();
+    await refresh();
+
+    if (cyclicDetected) return -2;
+    return moved;
   }
 
   Future<void> search(String query) async {
@@ -130,30 +259,77 @@ class ExplorerNotifier extends StateNotifier<List<FileNode>> {
       return;
     }
 
-    final jsonStr = NebulaApi.instance.searchVfs(query);
-    final List<dynamic> decoded = jsonDecode(jsonStr);
-    
-    final List<FileNode> nodes = decoded.map((item) {
-      return FileNode.fromSqlJson(Map<String, dynamic>.from(item));
-    }).toList();
+    state = state.copyWith(isLoading: true);
+    try {
+      final jsonStr = NebulaApi.instance.searchVfs(query);
+      final nodes = await compute(_parseFileNodes, jsonStr);
+      state = state.copyWith(files: nodes, isLoading: false);
+    } catch (e) {
+      _log('Search failed: $e');
+      state = state.copyWith(isLoading: false);
+    }
+  }
 
-    state = nodes;
+  Future<void> jumpToFolder(String id) async {
+    if (_isNavigating || id == state.currentFolderId) return;
+    _isNavigating = true;
+    try {
+      final index = state.navigationStack.indexOf(id);
+      List<String> newStack;
+      if (id == 'root') {
+        newStack = [];
+      } else if (index != -1) {
+        newStack = state.navigationStack.sublist(0, index);
+      } else {
+        // Fallback or root if not found
+        newStack = [];
+        id = 'root';
+      }
+
+      state = state.copyWith(
+        currentFolderId: id,
+        currentFolderName: state.folderNames[id] ?? (id == 'root' ? 'Root' : 'Folder'),
+        navigationStack: newStack,
+        isLoading: true,
+        selectedIds: {},
+      );
+      await _fetchDirectory(id);
+    } finally {
+      _isNavigating = false;
+    }
   }
 
   Future<void> goBack() async {
-    if (_navigationStack.isEmpty) {
-      if (_currentFolderId != 'root') {
-        _currentFolderId = 'root';
-        await refresh();
+    if (_isNavigating) return;
+    _isNavigating = true;
+    try {
+      if (state.navigationStack.isEmpty) {
+        if (state.currentFolderId != 'root') {
+          state = state.copyWith(
+            currentFolderId: 'root',
+            currentFolderName: 'Root',
+            selectedIds: {},
+            isLoading: true,
+          );
+          await _fetchDirectory('root');
+        }
+        return;
       }
-      return;
+      final newStack = [...state.navigationStack];
+      final previousId = newStack.removeLast();
+      state = state.copyWith(
+        currentFolderId: previousId,
+        currentFolderName: state.folderNames[previousId] ?? 'Root',
+        navigationStack: newStack,
+        selectedIds: {},
+        isLoading: true,
+      );
+      await _fetchDirectory(previousId);
+    } finally {
+      _isNavigating = false;
     }
-    _currentFolderId = _navigationStack.removeLast();
-    _selectedIds.clear(); // Clear selection on navigate
-    await refresh();
   }
 
-  // Legacy support for addNode (needs translation to SQL)
   Future<void> addNode(FileNode node) async {
     try {
       if (node.type == FileNodeType.folder) {
@@ -168,28 +344,55 @@ class ExplorerNotifier extends StateNotifier<List<FileNode>> {
           node.mimeType
         );
       }
+      
+      // Instant Delta Push
+      await SyncEngine().broadcastManifest(node);
     } catch (e) {
-      print('[Explorer] addNode failed: $e');
+      _log('addNode failed: $e');
     }
     SyncEngine().scheduleAutoPush();
     await refresh();
   }
 
   Future<void> deleteItem(String id) async {
-    // Optimistic UI update
-    state = state.where((node) => node.id != id).toList();
+    state = state.copyWith(
+      files: state.files.where((node) => node.id != id).toList(),
+    );
 
     try {
       NebulaApi.instance.deleteItem(id);
       SyncEngine().broadcastTombstone(id);
       SyncEngine().scheduleAutoPush();
     } catch (e) {
-      print('[Explorer] deleteItem failed: $e');
+      _log('deleteItem failed: $e');
       await refresh();
     }
   }
 
-  void _log(String message) {
-    print('[ExplorerNotifier] $message');
+  Future<void> loadThumbnail(FileNode node) async {
+    if (state.thumbnails.containsKey(node.id)) return;
+    
+    final vmk = SyncEngine().masterKeySnapshot;
+    if (vmk == null) return;
+
+    final bytes = await ThumbnailService().getThumbnail(node, vmk);
+    if (bytes != null) {
+      state = state.copyWith(
+        thumbnails: {...state.thumbnails, node.id: bytes},
+      );
+    }
   }
+
+  void _log(String message) {
+    if (kDebugMode) {
+      print('[ExplorerNotifier] $message');
+    }
+  }
+}
+
+List<FileNode> _parseFileNodes(String jsonStr) {
+  final List<dynamic> decoded = jsonDecode(jsonStr);
+  return decoded.map((item) {
+    return FileNode.fromSqlJson(Map<String, dynamic>.from(item));
+  }).toList();
 }

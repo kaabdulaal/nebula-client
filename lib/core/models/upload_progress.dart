@@ -9,6 +9,7 @@ enum UploadStatus {
 
 class UploadProgress {
   final String fileId;
+  final String name;
   final double percentComplete;
   final double currentSpeed; 
   final UploadStatus status;
@@ -16,6 +17,7 @@ class UploadProgress {
 
   UploadProgress({
     required this.fileId,
+    required this.name,
     required this.percentComplete,
     required this.currentSpeed,
     required this.status,
@@ -25,6 +27,7 @@ class UploadProgress {
   Map<String, dynamic> toJson() {
     return {
       'file_id': fileId,
+      'name': name,
       'percent_complete': percentComplete,
       'current_speed': currentSpeed,
       'status': status.name,

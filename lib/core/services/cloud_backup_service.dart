@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import '../api/nebula_api.dart';
 import 'telegram_service.dart';
 
@@ -104,7 +105,8 @@ class CloudBackupService {
 
     _log('Uploading $chunkCount part(s)...');
 
-    final tempDir = await Directory.systemTemp.createTemp('nebula_backup_');
+    final sysTemp = await getTemporaryDirectory();
+    final tempDir = await Directory('${sysTemp.path}/nebula_backup_${DateTime.now().millisecondsSinceEpoch}').create();
 
     try {
       for (int i = 0; i < chunkCount; i++) {
@@ -156,7 +158,8 @@ class CloudBackupService {
 
     _log('Found ${parts.length} backup part(s).');
 
-    final tempDir = await Directory.systemTemp.createTemp('nebula_restore_');
+    final sysTemp = await getTemporaryDirectory();
+    final tempDir = await Directory('${sysTemp.path}/nebula_restore_${DateTime.now().millisecondsSinceEpoch}').create();
     final decryptedChunks = <Uint8List>[];
 
     try {

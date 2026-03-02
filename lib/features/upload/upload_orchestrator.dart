@@ -2,12 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:nebula_client/core/api/nebula_api.dart';
 import 'package:nebula_client/core/models/file_manifest.dart';
-import 'package:nebula_client/core/models/file_node.dart';
 import 'package:nebula_client/core/services/telegram_service.dart';
 import 'package:nebula_client/core/services/vault_anchor_service.dart';
 import 'package:nebula_client/core/models/upload_progress.dart';
@@ -15,6 +14,14 @@ import 'package:nebula_client/core/services/sync_engine.dart';
 import 'package:nebula_client/features/upload/upload_manager.dart';
 
 class UploadOrchestrator {
+  Uint8List? _vmk;
+  String _fileName = 'Unknown';
+
+  UploadOrchestrator({Uint8List? vmk}) : _vmk = vmk;
+
+  void setVmk(Uint8List key) {
+    _vmk = Uint8List.fromList(key);
+  }
   final UploadManager _manager = UploadManager();
   final TelegramService _telegram = TelegramService();
   final VaultAnchorService _anchor = VaultAnchorService();
@@ -33,12 +40,19 @@ class UploadOrchestrator {
     String? mimeType,
     String? fileId,
   }) async {
-    final fileName = sourceFile.path.split(Platform.pathSeparator).last;
+    _fileName = sourceFile.path.split(Platform.pathSeparator).last;
     final fileSize = await sourceFile.length();
     final effectiveFileId = fileId ?? _generateRandomId();
     
+    // [ZOMBIE-FIX] Kill Switch: Proactively block uploads for tombstoned files
+    if (NebulaApi.instance.isTombstoned(effectiveFileId)) {
+      _log('[KILL-SWITCH] Aborting upload for tombstoned file: $effectiveFileId ($_fileName). Purging local ghost...');
+      if (await sourceFile.exists()) await sourceFile.delete();
+      return; 
+    }
+
     try {
-      _log('Initializing new upload for $fileName ($fileSize bytes)... ID: $effectiveFileId');
+      _log('Initializing new upload for $_fileName ($fileSize bytes)... ID: $effectiveFileId');
       
       _log('[DEBUG] Ensuring FFI is ready...');
       await _manager.ensureInitialized();
@@ -82,7 +96,8 @@ class UploadOrchestrator {
     } catch (e, stack) {
       _log('START UPLOAD FAILED: $e');
       if (kDebugMode) {
-        print('START UPLOAD CRASHED: $e \n $stack');
+        debugPrint('START UPLOAD CRASHED: $e');
+        debugPrintStack(stackTrace: stack);
       }
       _emitProgress(effectiveFileId, fileSize, UploadStatus.failed, error: e.toString());
       rethrow;
@@ -97,6 +112,15 @@ class UploadOrchestrator {
   }) async {
     final stateJson = NebulaApi.instance.getSetting('upload_job_$fileId');
     if (stateJson == null) throw Exception('No upload state found for fileId: $fileId');
+    _fileName = sourceFile.path.split(Platform.pathSeparator).last;
+
+    // [ZOMBIE-FIX] Kill Switch: Proactively block resumed uploads for tombstoned files
+    if (NebulaApi.instance.isTombstoned(fileId)) {
+      _log('[KILL-SWITCH] Aborting resumed upload for tombstoned file: $fileId. Purging local ghost...');
+      if (await sourceFile.exists()) await sourceFile.delete();
+      NebulaApi.instance.setSetting('upload_job_$fileId', ''); // Clear job state
+      return;
+    }
 
     final manifest = FileManifest.fromJson(jsonDecode(stateJson));
     final chatId = await _anchor.findNebulaChannel();
@@ -162,7 +186,8 @@ class UploadOrchestrator {
     } catch (e, stack) {
       _log('UPLOAD CRASHED: $e');
       if (kDebugMode) {
-        print('UPLOAD CRASHED: $e \n $stack');
+        debugPrint('UPLOAD CRASHED: $e');
+        debugPrintStack(stackTrace: stack);
       }
       _emitProgress(manifest.fileId, fileSize, UploadStatus.failed, error: e.toString());
       rethrow;
@@ -172,8 +197,12 @@ class UploadOrchestrator {
     final manifestBytes = utf8.encode(jsonEncode(manifest.toJson()));
     
     final manifestIv = _generateRandomBytes(12);
-    final encManifestData = _encryptData(Uint8List.fromList(manifestBytes), iv: manifestIv);
-    final tempManifestPath = '${Directory.systemTemp.path}/manifest_${manifest.fileId}.enc';
+    if (_vmk == null) {
+      throw Exception('Vault Master Key (VMK) is not set. Cannot encrypt manifest.');
+    }
+    final encManifestData = _encryptData(Uint8List.fromList(manifestBytes), key: _vmk!, iv: manifestIv);
+    final tempDir = await getTemporaryDirectory();
+    final tempManifestPath = '${tempDir.path}/manifest_${manifest.fileId}.enc';
     
     final finalBlob = Uint8List(12 + encManifestData.length);
     finalBlob.setAll(0, manifestIv);
@@ -199,6 +228,7 @@ class UploadOrchestrator {
     
     _progressController.add(UploadProgress(
       fileId: manifest.fileId,
+      name: _fileName,
       percentComplete: 100.0,
       currentSpeed: 0,
       status: UploadStatus.success,
@@ -218,7 +248,6 @@ class UploadOrchestrator {
     String? mimeType,
   }) async {
     try {
-      // 1. Persist to Relational VFS (C++ SQLite)
       NebulaApi.instance.upsertFile(
         fileId,
         parentId == 'root' ? null : parentId,
@@ -230,7 +259,6 @@ class UploadOrchestrator {
 
       _log('File persisted to Relational VFS: $name (id: $fileId)');
 
-      // 2. Schedule Auto-Push to Cloud
       SyncEngine().scheduleAutoPush();
       _log('Auto-push scheduled for: $name');
     } catch (e) {
@@ -278,7 +306,8 @@ class UploadOrchestrator {
         _emitProgress(fileId, totalFileSize, UploadStatus.uploading);
 
         final tempFileName = 'upload_temp_${fileId}_$chunkIndex.enc';
-        final encFilePath = '${Directory.systemTemp.path}/$tempFileName';
+        final tempDir = await getTemporaryDirectory();
+        final encFilePath = '${tempDir.path}/$tempFileName';
         
         _log('[ORCHESTRATOR] Dispatching chunk $chunkIndex to TDLib and waiting for confirmation...');
         final (msgId, tdlibFileId) = await _telegram.sendDocument(
@@ -338,6 +367,7 @@ class UploadOrchestrator {
 
     _progressController.add(UploadProgress(
       fileId: fileId,
+      name: _fileName,
       percentComplete: percent.clamp(0.0, 100.0),
       currentSpeed: speed,
       status: status,
@@ -346,35 +376,34 @@ class UploadOrchestrator {
   }
 
   Future<String> _encryptFEK(Uint8List fek) async {
-    final dummyVMK = Uint8List(32)..fillRange(0, 32, 0x42);
+    final vmk = _vmk;
+    if (vmk == null) {
+      throw Exception('Vault Master Key (VMK) is not set. Cannot encrypt FEK.');
+    }
     final iv = _generateRandomBytes(12);
-    final ciphertext = _encryptData(fek, key: dummyVMK, iv: iv);
+    final ciphertext = _encryptData(fek, key: vmk, iv: iv);
     return '${_bytesToHex(iv)}:${_bytesToHex(ciphertext)}';
   }
 
   Future<Uint8List> _decryptFEK(String encryptedFek) async {
+    final vmk = _vmk;
+    if (vmk == null) {
+      throw Exception('Vault Master Key (VMK) is not set. Cannot decrypt FEK.');
+    }
     final parts = encryptedFek.split(':');
     final iv = _hexToBytes(parts[0]);
     final ciphertext = _hexToBytes(parts[1]);
-    final dummyVMK = Uint8List(32)..fillRange(0, 32, 0x42);
-    return _decryptData(ciphertext, key: dummyVMK, iv: iv);
+    return _decryptData(ciphertext, key: vmk, iv: iv);
   }
 
-  Uint8List _encryptData(Uint8List data, {Uint8List? key, Uint8List? iv}) {
-    final encryptionKey = key ?? Uint8List(32)..fillRange(0, 32, 0x42);
-    final encryptionIv = iv ?? _generateRandomBytes(12);
-    
-    final result = NebulaApi.instance.encryptChunk(data, encryptionKey, encryptionIv);
+  Uint8List _encryptData(Uint8List data, {required Uint8List key, required Uint8List iv}) {
+    final result = NebulaApi.instance.encryptChunk(data, key, iv);
     if (result == null) throw Exception('Metadata encryption failed.');
-
     return Uint8List.fromList(result);
   }
 
-  Uint8List _decryptData(Uint8List data, {Uint8List? key, Uint8List? iv}) {
-    final decryptionKey = key ?? Uint8List(32)..fillRange(0, 32, 0x42);
-    final decryptionIv = iv ?? Uint8List(12); 
-    
-    final result = NebulaApi.instance.decryptChunk(data, decryptionKey, decryptionIv);
+  Uint8List _decryptData(Uint8List data, {required Uint8List key, required Uint8List iv}) {
+    final result = NebulaApi.instance.decryptChunk(data, key, iv);
     if (result == null) throw Exception('Metadata decryption failed.');
     return Uint8List.fromList(result);
   }
@@ -416,7 +445,7 @@ class UploadOrchestrator {
 
   void _log(String message) {
     if (kDebugMode) {
-      print('[ORCHESTRATOR] $message');
+      debugPrint('[ORCHESTRATOR] $message');
     }
   }
 }

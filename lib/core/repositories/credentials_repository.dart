@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:nebula_core/nebula_core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/remote_config_service.dart';
@@ -47,10 +48,12 @@ class CredentialsRepository {
       }
     }
 
+    // Try factory payload via stateless C++ decryption (works without DB)
     if (SecretStore.factoryPayload != 'PLACEHOLDER') {
-      final result = _ffi.importRemoteConfig(SecretStore.factoryPayload);
-      if (result == 0) {
-        return getCredentials();
+      final creds = _decryptPayloadViaCpp(SecretStore.factoryPayload);
+      if (creds != null) {
+        _memoryCredentials = creds;
+        return creds;
       }
     }
 
@@ -72,43 +75,58 @@ class CredentialsRepository {
     }
 
     final payload = await _remoteConfig.fetchRawPayload();
-    if (payload != null) {
-      try {
-        final sanitizedPayload = payload.trim().replaceAll(RegExp(r'\s+'), '');
-        final encryptedBytes = base64Decode(sanitizedPayload);
-        
-        final keyBytes = utf8.encode('nebula_cartridge_2026');
-        final decryptedBytes = List<int>.filled(encryptedBytes.length, 0);
-        
-        for (var i = 0; i < encryptedBytes.length; i++) {
-          decryptedBytes[i] = encryptedBytes[i] ^ keyBytes[i % keyBytes.length];
-        }
+    if (payload == null) return false;
 
-        final jsonStr = utf8.decode(decryptedBytes);
-        final data = jsonDecode(jsonStr);
-
-        final apiId = data['telegram_api_id'] ?? data['api_id'];
-        final apiHash = data['telegram_api_hash'] ?? data['api_hash'];
-        final version = data['telegram_api_version'] ?? data['version'] ?? 0;
-
-        if (apiId != null && apiHash != null) {
-          await saveCredentials(
-            apiId is int ? apiId : int.parse(apiId.toString()),
-            apiHash.toString(),
-            version: version is int ? version : int.parse(version.toString()),
-          );
-          return true;
-        }
-      } catch (e) {
-        print('[Credentials] Dart decryption failed: $e');
+    // Try FFI import first (requires DB to be initialized)
+    final result = _ffi.importRemoteConfig(payload);
+    if (result == 0 || result == 1) {
+      final creds = await getCredentials();
+      if (creds != null) {
+        await SecretStore.saveCredentials(creds.apiId, creds.apiHash);
       }
-
-      final result = _ffi.importRemoteConfig(payload);
-      if (result == 0) {
-        return true;
-      }
+      return true;
     }
+
+    // FFI import failed (likely DB not initialized on fresh install).
+    // Fallback: use stateless C++ decryption (keeps secrets in native code).
+    debugPrint('[Credentials] FFI import failed (code: $result). Using stateless C++ decryption...');
+    final creds = _decryptPayloadViaCpp(payload);
+    if (creds != null) {
+      _memoryCredentials = creds;
+      await SecretStore.saveCredentials(creds.apiId, creds.apiHash);
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('cached_api_id', creds.apiId);
+      await prefs.setString('cached_api_hash', creds.apiHash);
+
+      debugPrint('[Credentials] Stateless C++ decryption succeeded. Credentials cached.');
+      return true;
+    }
+
     return false;
+  }
+
+  /// Decrypt a cartridge payload using the stateless C++ FFI function.
+  /// This works even when the database is not initialized.
+  TelegramCredentials? _decryptPayloadViaCpp(String payload) {
+    try {
+      final jsonStr = _ffi.decryptCartridge(payload);
+      if (jsonStr == null) return null;
+
+      final root = jsonDecode(jsonStr) as Map<String, dynamic>;
+      final apiId = root['api_id'] is int
+          ? root['api_id'] as int
+          : int.tryParse(root['api_id'].toString());
+      final apiHash = root['api_hash'] as String?;
+
+      if (apiId != null && apiHash != null && apiHash.isNotEmpty) {
+        debugPrint('[Credentials] C++ cartridge decryption successful. API ID: $apiId');
+        return TelegramCredentials(apiId: apiId, apiHash: apiHash);
+      }
+    } catch (e) {
+      debugPrint('[Credentials] C++ cartridge decryption failed: $e');
+    }
+    return null;
   }
 
   Future<void> saveCredentials(int apiId, String apiHash,
