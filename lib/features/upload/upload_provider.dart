@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/models/upload_progress.dart';
 import '../../core/services/sync_engine.dart';
@@ -20,7 +21,8 @@ class UploadNotifier extends StateNotifier<Map<String, UploadProgress>> {
     required String parentId,
   }) async {
     final vmk = SyncEngine().isSecurityHardened ? SyncEngine().masterKeySnapshot : null;
-    final orchestrator = UploadOrchestrator(vmk: vmk);
+    final orchestrator = UploadOrchestrator();
+    if (vmk != null) orchestrator.setMasterKey(vmk);
     
     final hexId = DateTime.now().microsecondsSinceEpoch.toRadixString(16);
     _orchestrators[hexId] = orchestrator;
@@ -32,19 +34,28 @@ class UploadNotifier extends StateNotifier<Map<String, UploadProgress>> {
         progress.fileId: progress,
       };
 
-      if (progress.status == UploadStatus.success) {
-        ref.read(explorerProvider.notifier).refresh();
+      if (progress.status == UploadStatus.success || progress.status == UploadStatus.failed) {
+        _log('UPLOAD FINALIZED: ${progress.fileId} (${progress.status}). Clearing state.');
+        final newState = {...state};
+        newState.remove(progress.fileId);
+        state = newState;
+        
         _orchestrators.remove(progress.fileId);
-      } else if (progress.status == UploadStatus.failed) {
-        _orchestrators.remove(progress.fileId);
+        if (progress.status == UploadStatus.success) {
+          ref.read(explorerProvider.notifier).refresh();
+        }
       }
     });
     
     try {
       await orchestrator.startUpload(sourceFile: sourceFile, parentId: parentId, fileId: hexId);
     } catch (e) {
-      // Error handled by status stream
+      _log('UPLOAD INITIATION FAILED: $e');
     }
+  }
+
+  void _log(String msg) {
+    if (kDebugMode) print('[UPLOAD_NOTIFIER] $msg');
   }
 
   Future<void> resumeUpload({
@@ -55,7 +66,8 @@ class UploadNotifier extends StateNotifier<Map<String, UploadProgress>> {
     if (_orchestrators.containsKey(fileId)) return; 
 
     final vmk = SyncEngine().isSecurityHardened ? SyncEngine().masterKeySnapshot : null;
-    final orchestrator = UploadOrchestrator(vmk: vmk);
+    final orchestrator = UploadOrchestrator();
+    if (vmk != null) orchestrator.setMasterKey(vmk);
     _orchestrators[fileId] = orchestrator;
 
     orchestrator.progress.listen((progress) {
@@ -66,14 +78,19 @@ class UploadNotifier extends StateNotifier<Map<String, UploadProgress>> {
       };
 
       if (progress.status == UploadStatus.success || progress.status == UploadStatus.failed) {
+        state = {...state};
+        state.remove(fileId);
         _orchestrators.remove(fileId);
+        if (progress.status == UploadStatus.success) {
+           ref.read(explorerProvider.notifier).refresh();
+        }
       }
     });
 
     try {
       await orchestrator.resumeUpload(fileId: fileId, sourceFile: sourceFile, parentId: parentId);
     } catch (e) {
-      // Error handled by status stream
+      _log('RESUME INITIATION FAILED: $e');
     }
   }
 }

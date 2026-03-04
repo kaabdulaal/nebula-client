@@ -7,12 +7,28 @@ enum UploadStatus {
   failed,
 }
 
+extension UploadStatusX on UploadStatus {
+  String get label {
+    switch (this) {
+      case UploadStatus.idle: return 'Idle';
+      case UploadStatus.encrypting: return 'Encrypting...';
+      case UploadStatus.uploading: return 'Uploading Chunks...';
+      case UploadStatus.waitingFloodWait: return 'Rate Limited (Waiting)';
+      case UploadStatus.success: return 'Success';
+      case UploadStatus.failed: return 'Failed';
+    }
+  }
+
+  bool get isTerminal => this == UploadStatus.success || this == UploadStatus.failed;
+}
+
 class UploadProgress {
   final String fileId;
   final String name;
   final double percentComplete;
   final double currentSpeed; 
   final UploadStatus status;
+  final String? statusLabel;
   final String? error;
 
   UploadProgress({
@@ -21,6 +37,7 @@ class UploadProgress {
     required this.percentComplete,
     required this.currentSpeed,
     required this.status,
+    this.statusLabel,
     this.error,
   });
 
@@ -30,7 +47,8 @@ class UploadProgress {
       'name': name,
       'percent_complete': percentComplete,
       'current_speed': currentSpeed,
-      'status': status.name,
+      'status': status.toString().split('.').last,
+      'status_label': statusLabel,
       'error': error,
     };
   }

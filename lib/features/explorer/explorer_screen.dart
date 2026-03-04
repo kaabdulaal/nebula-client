@@ -11,26 +11,22 @@ import '../../core/models/file_node.dart';
 import '../transfers/download_orchestrator.dart';
 import '../../core/services/transfer_service.dart';
 import '../../core/models/transfer_progress.dart';
+import '../../core/utils/format_utils.dart';
 
-/// Returns MIME-type-aware icon data for file items.
-({IconData icon, Color color}) _getFileIcon(String mimeType) {
-  if (mimeType.startsWith('image/')) {
+({IconData icon, Color color}) _getFileIcon(FileNode node) {
+  if (node.isImage) {
     return (icon: Icons.image, color: Colors.green);
   }
-  if (mimeType.startsWith('video/')) {
+  if (node.isVideo) {
     return (icon: Icons.videocam, color: Colors.purple);
   }
-  if (mimeType.startsWith('audio/')) {
+  if (node.isAudio) {
     return (icon: Icons.audiotrack, color: Colors.teal);
   }
-  if (mimeType == 'application/pdf') {
+  if (node.isPdf) {
     return (icon: Icons.picture_as_pdf, color: Colors.red);
   }
-  if (mimeType.contains('zip') ||
-      mimeType.contains('tar') ||
-      mimeType.contains('rar') ||
-      mimeType.contains('7z') ||
-      mimeType.contains('archive')) {
+  if (node.isArchive) {
     return (icon: Icons.archive, color: Colors.orange);
   }
   return (icon: Icons.insert_drive_file, color: Colors.blue);
@@ -47,6 +43,21 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
   @override
   void initState() {
     super.initState();
+  }
+
+  String _buildSafeSubtitle(FileNode node) {
+    try {
+      final sizeStr = NebulaFormatUtils.formatBytes(node.size);
+      String status;
+      try {
+        status = node.syncStatus.label;
+      } catch (_) {
+        status = 'Synced';
+      }
+      return '$sizeStr • $status';
+    } catch (e) {
+      return NebulaFormatUtils.formatBytes(node.size);
+    }
   }
 
   Widget _buildLeading(
@@ -79,27 +90,11 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
       return const Icon(Icons.folder, color: Colors.amber);
     }
 
-    if (node.mimeType.startsWith('image/')) {
-      final thumb = state.thumbnails[node.id];
-      if (thumb != null) {
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(4),
-          child: Image.memory(
-            thumb,
-            width: 40,
-            height: 40,
-            fit: BoxFit.cover,
-            cacheWidth: 120, // Low-res for list view
-          ),
-        );
-      } else {
-        // Trigger load in next microtask to avoid build-time state changes
-        Future.microtask(() => notifier.loadThumbnail(node));
-        return const Icon(Icons.image, color: Colors.green);
-      }
+    if (node.isImage) {
+      return _ThumbnailWidget(node: node);
     }
 
-    final meta = _getFileIcon(node.mimeType);
+    final meta = _getFileIcon(node);
     return Icon(meta.icon, color: meta.color);
   }
 
@@ -117,7 +112,6 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
     final transfers = ref.watch(transferServiceProvider);
     final isNotRoot = currentFolderId != 'root';
     
-    // Navigation is handled solely by GoRouter redirect — no manual ref.listen needed.
 
     return Scaffold(
       backgroundColor: const Color(0xFF1A1A1A),
@@ -177,7 +171,6 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
       ),
       body: Column(
         children: [
-          // Path bar removed (replaced by interactive breadcrumbs in AppBar)
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: TextField(
@@ -240,8 +233,8 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
                         isFolder 
                             ? 'Folder' 
                             : (isTransferring 
-                                ? '${transfer.type == TransferType.upload ? 'Uploading' : 'Downloading'}... ${(transfer.progress * 100).toStringAsFixed(0)}%'
-                                : '${(node.size / 1024).toStringAsFixed(1)} KB • ${node.syncStatus.name}'),
+                                ? '${transfer.statusLabel ?? (transfer.type == TransferType.upload ? 'Uploading' : 'Downloading')}... ${(transfer.progress * 100).toStringAsFixed(0)}%'
+                                : _buildSafeSubtitle(node)),
                         style: const TextStyle(color: Colors.white54, fontSize: 12),
                       ),
                       if (isTransferring)
@@ -332,8 +325,7 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
   }
 
   Future<void> _handleDownload(BuildContext context, WidgetRef ref, FileNode node) async {
-    final vmk = ref.read(syncEngineProvider).masterKeySnapshot;
-    final orchestrator = DownloadOrchestrator(vmk: vmk);
+    final orchestrator = DownloadOrchestrator();
     final messenger = ScaffoldMessenger.of(context);
     
     try {
@@ -518,7 +510,6 @@ class _BreadcrumbWidget extends ConsumerWidget {
     
     List<Widget> crumbs = [];
     
-    // Root
     crumbs.add(
       _Crumb(
         name: 'Root',
@@ -587,6 +578,63 @@ class _Crumb extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+class _ThumbnailWidget extends ConsumerStatefulWidget {
+  final FileNode node;
+  const _ThumbnailWidget({required this.node});
+
+  @override
+  ConsumerState<_ThumbnailWidget> createState() => _ThumbnailWidgetState();
+}
+
+class _ThumbnailWidgetState extends ConsumerState<_ThumbnailWidget> {
+  @override
+  void initState() {
+    super.initState();
+    _loadThumbnail();
+  }
+
+  void _loadThumbnail() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ref.read(explorerProvider.notifier).loadThumbnail(widget.node);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = ref.watch(explorerProvider);
+    final thumb = state.thumbnails[widget.node.id];
+
+    if (thumb != null) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(4),
+        child: Image.memory(
+          thumb,
+          width: 40,
+          height: 40,
+          fit: BoxFit.cover,
+          cacheWidth: 120,
+          frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+            if (wasSynchronouslyLoaded) return child;
+            return AnimatedOpacity(
+              opacity: frame == null ? 0 : 1,
+              duration: const Duration(milliseconds: 500),
+              curve: Curves.easeOut,
+              child: child,
+            );
+          },
+        ),
+      );
+    }
+
+    return AnimatedOpacity(
+      opacity: 0.3,
+      duration: const Duration(seconds: 1),
+      child: const Icon(Icons.image, color: Colors.green),
     );
   }
 }

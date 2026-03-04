@@ -5,13 +5,6 @@ import '../../core/api/nebula_api.dart';
 import '../../core/auth/auth_provider.dart';
 import '../../core/auth/auth_state.dart';
 
-/// Cloud Unlock Screen — password-only restore for existing vaults.
-///
-/// This screen is shown when cloud metadata is found for the user's
-/// Telegram account. The user only needs to enter their vault password
-/// to decrypt the mnemonic from the cloud and restore locally.
-///
-/// Mnemonic recovery is handled by a separate [RestoreWalletScreen].
 class CloudUnlockScreen extends ConsumerStatefulWidget {
   const CloudUnlockScreen({super.key});
 
@@ -99,7 +92,6 @@ class _CloudUnlockScreenState extends ConsumerState<CloudUnlockScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Icon
                 Container(
                   width: 96,
                   height: 96,
@@ -119,7 +111,6 @@ class _CloudUnlockScreenState extends ConsumerState<CloudUnlockScreen> {
                 ),
                 const SizedBox(height: 32),
 
-                // Title
                 const Text(
                   'Vault Found',
                   style: TextStyle(
@@ -131,7 +122,6 @@ class _CloudUnlockScreenState extends ConsumerState<CloudUnlockScreen> {
                 ),
                 const SizedBox(height: 12),
 
-                // Subtitle
                 Text(
                   'An encrypted backup was found on your Telegram account.\n'
                   'Enter your vault password to restore.',
@@ -144,7 +134,6 @@ class _CloudUnlockScreenState extends ConsumerState<CloudUnlockScreen> {
                 ),
                 const SizedBox(height: 40),
 
-                // Password field
                 TextField(
                   controller: _passwordController,
                   obscureText: _obscurePassword,
@@ -176,7 +165,6 @@ class _CloudUnlockScreenState extends ConsumerState<CloudUnlockScreen> {
                   ),
                 ),
 
-                // Error message
                 if (_error != null || authState.errorMessage != null) ...[
                   const SizedBox(height: 16),
                   Text(
@@ -188,7 +176,6 @@ class _CloudUnlockScreenState extends ConsumerState<CloudUnlockScreen> {
 
                 const SizedBox(height: 24),
 
-                // Unlock button
                 SizedBox(
                   width: double.infinity,
                   height: 52,
@@ -222,7 +209,6 @@ class _CloudUnlockScreenState extends ConsumerState<CloudUnlockScreen> {
                   children: [
                     TextButton(
                       onPressed: () {
-                        // Transition to mnemonic recovery (router handles redirect)
                         ref.read(authProvider.notifier).forceRestoreState();
                       },
                       child: Text(

@@ -36,7 +36,6 @@ class _LockScreenState extends ConsumerState<LockScreen> {
   }
 
   Future<void> _attemptBiometricUnlock({bool auto = false}) async {
-    // Skip biometrics on desktop platforms
     if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
       if (auto) setState(() => _showPasswordField = true);
       return;
@@ -74,7 +73,6 @@ class _LockScreenState extends ConsumerState<LockScreen> {
         return;
       }
 
-      // Check SecretStore BEFORE prompting the fingerprint scanner
       final password = await SecretStore.readVaultPassword();
       if (password == null || password.isEmpty) {
         debugPrint('[Biometrics] No password in SecretStore.');
@@ -148,7 +146,6 @@ class _LockScreenState extends ConsumerState<LockScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Vault icon with subtle glow
                 Container(
                   padding: const EdgeInsets.all(20),
                   decoration: BoxDecoration(
@@ -185,7 +182,6 @@ class _LockScreenState extends ConsumerState<LockScreen> {
 
               const SizedBox(height: 40),
 
-              // Status message (biometric in progress)
               if (_statusMessage != null && !_showPasswordField) ...[
                 const SizedBox(height: 16),
                 const CircularProgressIndicator(color: Color(0xFF6366F1)),
@@ -207,7 +203,6 @@ class _LockScreenState extends ConsumerState<LockScreen> {
                 ),
               ],
 
-              // Password input
               if (_showPasswordField) ...[
                 TextField(
                   controller: _passwordController,
@@ -259,7 +254,6 @@ class _LockScreenState extends ConsumerState<LockScreen> {
                         : const Text('Unlock', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   ),
                 ),
-                // Biometric retry button (mobile only)
                 if (!Platform.isLinux && !Platform.isWindows && !Platform.isMacOS) ...[
                   const SizedBox(height: 16),
                   TextButton.icon(

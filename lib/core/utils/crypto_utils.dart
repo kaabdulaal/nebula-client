@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:encrypt/encrypt.dart' as enc;
@@ -18,20 +19,20 @@ class PBKDF2Params {
 }
 
 class CryptoUtils {
-  static Uint8List aesGcmEncrypt(Uint8List input, Uint8List key, Uint8List iv) {
+  static Uint8List aesGcmEncrypt(Uint8List input, Uint8List key, Uint8List iv, {Uint8List? aad}) {
     final encKey = enc.Key(key);
     final encIv = enc.IV(iv);
     final encrypter = enc.Encrypter(enc.AES(encKey, mode: enc.AESMode.gcm));
-    final encrypted = encrypter.encryptBytes(input, iv: encIv);
+    final encrypted = encrypter.encryptBytes(input, iv: encIv, associatedData: aad);
     return encrypted.bytes;
   }
 
-  static Uint8List? aesGcmDecrypt(Uint8List input, Uint8List key, Uint8List iv) {
+  static Uint8List? aesGcmDecrypt(Uint8List input, Uint8List key, Uint8List iv, {Uint8List? aad}) {
     try {
       final encKey = enc.Key(key);
       final encIv = enc.IV(iv);
       final encrypter = enc.Encrypter(enc.AES(encKey, mode: enc.AESMode.gcm));
-      final decrypted = encrypter.decryptBytes(enc.Encrypted(input), iv: encIv);
+      final decrypted = encrypter.decryptBytes(enc.Encrypted(input), iv: encIv, associatedData: aad);
       return Uint8List.fromList(decrypted);
     } catch (e) {
       if (kDebugMode) debugPrint('[CryptoUtils] GCM Decrypt Error: $e');
@@ -100,5 +101,10 @@ class CryptoUtils {
 
   static String bytesToMnemonic(Uint8List bytes) {
     return utf8.decode(bytes).trim();
+  }
+
+  static Uint8List generateRandomBytes(int len) {
+    final random = Random.secure();
+    return Uint8List.fromList(List.generate(len, (_) => random.nextInt(256)));
   }
 }

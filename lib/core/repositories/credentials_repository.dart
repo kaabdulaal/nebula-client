@@ -48,7 +48,6 @@ class CredentialsRepository {
       }
     }
 
-    // Try factory payload via stateless C++ decryption (works without DB)
     if (SecretStore.factoryPayload != 'PLACEHOLDER') {
       final creds = _decryptPayloadViaCpp(SecretStore.factoryPayload);
       if (creds != null) {
@@ -77,7 +76,6 @@ class CredentialsRepository {
     final payload = await _remoteConfig.fetchRawPayload();
     if (payload == null) return false;
 
-    // Try FFI import first (requires DB to be initialized)
     final result = _ffi.importRemoteConfig(payload);
     if (result == 0 || result == 1) {
       final creds = await getCredentials();
@@ -87,8 +85,6 @@ class CredentialsRepository {
       return true;
     }
 
-    // FFI import failed (likely DB not initialized on fresh install).
-    // Fallback: use stateless C++ decryption (keeps secrets in native code).
     debugPrint('[Credentials] FFI import failed (code: $result). Using stateless C++ decryption...');
     final creds = _decryptPayloadViaCpp(payload);
     if (creds != null) {
@@ -106,8 +102,6 @@ class CredentialsRepository {
     return false;
   }
 
-  /// Decrypt a cartridge payload using the stateless C++ FFI function.
-  /// This works even when the database is not initialized.
   TelegramCredentials? _decryptPayloadViaCpp(String payload) {
     try {
       final jsonStr = _ffi.decryptCartridge(payload);

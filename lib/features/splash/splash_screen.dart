@@ -114,7 +114,6 @@ class SplashScreen extends ConsumerWidget {
               const SizedBox(width: 16),
               ElevatedButton(
                 onPressed: () {
-                  // Use resetInitialization if possible, otherwise refresh provider
                   ref.read(authProvider.notifier).resetInitialization();
                   final _ = ref.refresh(initializationProvider);
                 },

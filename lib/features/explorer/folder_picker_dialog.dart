@@ -3,14 +3,11 @@ import 'package:flutter/material.dart';
 import '../../core/api/nebula_api.dart';
 import '../../core/models/file_node.dart';
 
-/// A modal bottom sheet that lets the user pick a destination folder.
-/// Excludes items in [excludeIds] to prevent moving a folder into itself.
 class FolderPickerDialog extends StatefulWidget {
   final Set<String> excludeIds;
 
   const FolderPickerDialog({super.key, required this.excludeIds});
 
-  /// Shows the dialog and returns the selected folder ID, or null if cancelled.
   static Future<String?> show(BuildContext context, {required Set<String> excludeIds}) {
     return showModalBottomSheet<String>(
       context: context,
@@ -75,7 +72,6 @@ class _FolderPickerDialogState extends State<FolderPickerDialog> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Header
           Row(
             children: [
               if (_navStack.isNotEmpty)
@@ -101,7 +97,6 @@ class _FolderPickerDialogState extends State<FolderPickerDialog> {
           ),
           const Divider(color: Colors.white12),
 
-          // Folder list
           ConstrainedBox(
             constraints: BoxConstraints(
               maxHeight: MediaQuery.of(context).size.height * 0.4,
@@ -127,7 +122,6 @@ class _FolderPickerDialogState extends State<FolderPickerDialog> {
           ),
 
           const SizedBox(height: 8),
-          // Cancel
           SizedBox(
             width: double.infinity,
             child: TextButton(

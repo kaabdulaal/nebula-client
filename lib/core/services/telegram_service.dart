@@ -11,6 +11,7 @@ export 'dart:async' show TimeoutException;
 
 class TelegramService {
   static final TelegramService _instance = TelegramService._internal();
+  static TelegramService get instance => _instance;
   factory TelegramService() => _instance;
   TelegramService._internal();
 
@@ -19,6 +20,12 @@ class TelegramService {
   StreamSubscription? _updatesSubscription;
 
   bool _initialized = false;
+  bool _isHighPriorityActive = false;
+  
+  void setHighPriorityTask(bool active) {
+    _log('[PRIORITY] High-priority task: $active');
+    _isHighPriorityActive = active;
+  }
 
   final _updatesController = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get updates => _updatesController.stream;
@@ -28,8 +35,25 @@ class TelegramService {
 
   Map<String, dynamic>? _lastAuthState;
   final Map<int, Completer<Map<String, dynamic>>> _pendingMessages = {};
-  final Map<int, Completer<String>> _pendingDownloads = {};
+  Map<int, Completer<String>> _pendingDownloads = {};
   Map<String, dynamic>? get currentAuthState => _lastAuthState;
+
+  int _lastServerTime = 0;
+  DateTime? _lastSyncTime;
+
+  int get serverTime {
+    if (_lastSyncTime == null) return DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final elapsed = DateTime.now().difference(_lastSyncTime!).inSeconds;
+    return _lastServerTime + elapsed;
+  }
+
+  void _syncTime(int? serverUnixTime) {
+    if (serverUnixTime == null || serverUnixTime <= 0) return;
+    if (serverUnixTime > _lastServerTime) {
+      _lastServerTime = serverUnixTime;
+      _lastSyncTime = DateTime.now();
+    }
+  }
 
   bool get isAuthorized => _lastAuthState?['@type'] == 'authorizationStateReady';
 
@@ -139,6 +163,18 @@ class TelegramService {
         }
       }
 
+      if (update.containsKey('message')) {
+        final msg = update['message'];
+        if (msg is Map && msg.containsKey('date')) {
+          _syncTime(msg['date'] as int?);
+        }
+      } else if (type == 'updateNewMessage') {
+        final msg = update['message'];
+        if (msg is Map) {
+          _syncTime(msg['date'] as int?);
+        }
+      }
+
       if (type == 'updateAuthorizationState') {
         _lastAuthState = update['authorization_state'] as Map<String, dynamic>?; 
         final authState = _lastAuthState?['@type'];
@@ -198,8 +234,6 @@ class TelegramService {
     send({'@type': 'getAuthorizationState'});
   }
 
-  /// Adds a proxy configuration to TDLib. 
-  /// [type] can be 'proxyTypeSocks5', 'proxyTypeHttp', or 'proxyTypeMtproto'.
   void addProxy({
     required String server,
     required int port,
@@ -372,8 +406,14 @@ class TelegramService {
     );
   }
 
-  Future<List<Map<String, dynamic>>> getPinnedMessages(int chatId) async {
-    final extra = 'nebula_getPinned_${chatId}_${DateTime.now().microsecondsSinceEpoch}';
+  Future<List<Map<String, dynamic>>> searchMessages({
+    required int chatId,
+    required String query,
+    int fromMessageId = 0,
+    int limit = 100,
+    Map<String, dynamic>? filter,
+  }) async {
+    final extra = 'nebula_search_${chatId}_${DateTime.now().microsecondsSinceEpoch}';
     final completer = Completer<List<Map<String, dynamic>>>();
     StreamSubscription? sub;
 
@@ -389,7 +429,7 @@ class TelegramService {
       } else if (type == 'error') {
         if (!completer.isCompleted) {
           completer.completeError(
-              NebulaError(update['code'] as int? ?? 0, update['message'] as String? ?? 'getPinnedMessages failed'));
+              NebulaError(update['code'] as int? ?? 0, update['message'] as String? ?? 'searchMessages failed'));
           sub?.cancel();
         }
       }
@@ -398,20 +438,28 @@ class TelegramService {
     send({
       '@type': 'searchChatMessages',
       'chat_id': chatId,
-      'query': '',
-      'filter': {'@type': 'searchMessagesFilterPinned'},
-      'from_message_id': 0,
+      'query': query,
+      'filter': filter ?? {'@type': 'searchMessagesFilterEmpty'},
+      'from_message_id': fromMessageId,
       'offset': 0,
-      'limit': 100,
+      'limit': limit,
       '@extra': extra,
     });
 
     return completer.future.timeout(
-      const Duration(seconds: 10),
+      const Duration(seconds: 15),
       onTimeout: () {
         sub?.cancel();
         return [];
       },
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getPinnedMessages(int chatId) async {
+    return searchMessages(
+      chatId: chatId,
+      query: '',
+      filter: {'@type': 'searchMessagesFilterPinned'},
     );
   }
 
@@ -525,13 +573,18 @@ class TelegramService {
     final file = await getFile(fileId);
     if (file != null) {
       final local = file['local'] as Map?;
-      if (local?['is_downloading_completed'] == true && local?['path'] != null) {
-        final path = local!['path'] as String;
+      final path = local?['path'] as String?;
+      
+      if (path != null && path.isNotEmpty) {
         if (File(path).existsSync()) {
-          _log('[DOWNLOAD] File $fileId already available at $path');
-          return path;
+          if (local?['is_downloading_completed'] == true) {
+            _log('[DOWNLOAD] File $fileId already available at $path');
+            return path;
+          }
         } else {
-          _log('[DOWNLOAD] TDLib cache points to missing file ($path). Forcing redownload...');
+          _log('[DOWNLOAD] TDLib cache points to missing file ($path). Clearing local record to force re-download...');
+          await deleteFile(fileId);
+          await getFile(fileId);
         }
       }
     }
@@ -550,13 +603,7 @@ class TelegramService {
     });
 
     try {
-      return await completer.future.timeout(
-        const Duration(minutes: 10),
-        onTimeout: () {
-          _pendingDownloads.remove(fileId);
-          throw TimeoutException('Download for file $fileId timed out after 10 minutes');
-        },
-      );
+      return await completer.future;
     } catch (e) {
       _pendingDownloads.remove(fileId);
       rethrow;
@@ -564,14 +611,27 @@ class TelegramService {
   }
 
 
+  Future<Map<String, dynamic>?> _getMessageContent(int chatId, int messageId) async {
+    final msg = await getMessage(chatId, messageId);
+    if (msg == null) return null;
+    return msg['content'] as Map<String, dynamic>?;
+  }
+
   Future<(int, int)> sendDocument({
     required int chatId,
     required String filePath,
     String? caption,
+    void Function(double)? onProgress,
   }) async {
+    if (_isHighPriorityActive && (caption?.contains('#NEBULA_') ?? false)) {
+      _log('[PRIORITY] Throttling background sync document...');
+      await Future.delayed(const Duration(milliseconds: 2000));
+    }
+
     final extra = 'nebula_sendDoc_${DateTime.now().microsecondsSinceEpoch}';
     final initialCompleter = Completer<int>();
     StreamSubscription? sub;
+    StreamSubscription? progressSub;
 
     sub = _updatesController.stream.listen((update) {
       if (update['@extra'] != extra) return;
@@ -612,24 +672,54 @@ class TelegramService {
       '@extra': extra,
     });
 
-    final tempMsgId = await initialCompleter.future.timeout(
-      const Duration(seconds: 10),
-      onTimeout: () => throw TimeoutException('sendDocument initial call timed out'),
-    );
+    final tempMsgId = await initialCompleter.future;
 
     _log('[MSG_SEND] Initial message sent. TempID: $tempMsgId. Registering lifecycle watcher...');
+
+    if (onProgress != null) {
+      int? trackingFileId;
+      try {
+        final content = await _getMessageContent(chatId, tempMsgId);
+        if (content != null && content['@type'] == 'messageDocument') {
+          trackingFileId = content['document']?['document']?['id'] as int?;
+        }
+      } catch (_) {}
+
+      progressSub = _updatesController.stream.listen((update) {
+        if (update['@type'] == 'updateMessageSendSucceeded' || update['@type'] == 'updateMessageSendFailed') {
+          final oldId = update['old_message_id'] as int?;
+          if (oldId == tempMsgId) progressSub?.cancel();
+          return;
+        }
+
+        if (trackingFileId == null && update['@type'] == 'updateMessageContent' && update['message_id'] == tempMsgId) {
+          final content = update['new_content'];
+          if (content != null && content['@type'] == 'messageDocument') {
+            trackingFileId = content['document']?['document']?['id'] as int?;
+            _log('[PROGRESS] Discovered trackingFileId via updateMessageContent: $trackingFileId');
+          }
+        }
+
+        if (update['@type'] == 'updateFile' && trackingFileId != null) {
+          final file = update['file'] as Map?;
+          if (file?['id'] == trackingFileId) {
+            final expectedSize = file?['expected_size'] as int? ?? file?['size'] as int? ?? 1;
+            final remote = file?['remote'] as Map?;
+            final uploadedSize = remote?['uploaded_size'] as int? ?? 0;
+            if (expectedSize > 0 && uploadedSize > 0) {
+              final progress = uploadedSize / expectedSize;
+              onProgress(progress.clamp(0.0, 1.0));
+            }
+          }
+        }
+      });
+    }
 
     final finalCompleter = Completer<Map<String, dynamic>>();
     _pendingMessages[tempMsgId] = finalCompleter;
 
     try {
-      final finalMessage = await finalCompleter.future.timeout(
-        const Duration(minutes: 5),
-        onTimeout: () {
-          _pendingMessages.remove(tempMsgId);
-          throw TimeoutException('sendDocument confirmation timed out after 5 minutes');
-        },
-      );
+      final finalMessage = await finalCompleter.future;
 
       final finalMsgId = finalMessage['id'] as int;
       final content = finalMessage['content'] as Map<String, dynamic>?;
@@ -641,11 +731,13 @@ class TelegramService {
       final fileId = content['document']['document']['id'] as int;
       
       _log('[MSG_SEND] Upload confirmed! FinalMsgID: $finalMsgId, RemoteFileID: $fileId');
+      progressSub?.cancel();
       return (finalMsgId, fileId);
 
     } catch (e) {
       _log('[MSG_ERROR] Send failed for TempID $tempMsgId: $e');
       _pendingMessages.remove(tempMsgId);
+      progressSub?.cancel();
       rethrow;
     }
   }
@@ -673,6 +765,11 @@ class TelegramService {
     required int chatId,
     required String text,
   }) async {
+    if (_isHighPriorityActive && text.contains('#NEBULA_')) {
+      _log('[PRIORITY] Throttling background sync text message...');
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+
     final extra = 'nebula_sendMsg_${DateTime.now().microsecondsSinceEpoch}';
     final completer = Completer<int>();
     StreamSubscription? sub;
@@ -740,6 +837,16 @@ class TelegramService {
       'revoke': revoke,
     });
     _log('[DELETE] Requested deletion of ${messageIds.length} messages in Chat $chatId');
+  }
+
+  Future<void> deleteFile(int fileId) async {
+    final extra = 'delete_file_$fileId';
+    send({
+      '@type': 'deleteFile',
+      'file_id': fileId,
+      '@extra': extra,
+    });
+    _log('[CACHE] Requested deletion of file record $fileId');
   }
 
   void _log(String message) {

@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:ffi/ffi.dart';
 import 'package:convert/convert.dart';
 import 'package:nebula_core/nebula_core_bindings_generated.dart';
+import 'package:nebula_client/core/services/telegram_service.dart';
 
 class _NebulaLogger {
   static void d(String message) {
@@ -111,7 +112,12 @@ class NebulaApi {
     }
 
     if (Platform.isAndroid) {
-      return ffi.DynamicLibrary.open(libName);
+      try {
+        return ffi.DynamicLibrary.open('libnebula_core.so');
+      } catch (e) {
+        debugPrint('[NEBULA] Android library load FAILED ($e). Fallback to process...');
+        return ffi.DynamicLibrary.process();
+      }
     }
 
     throw UnsupportedError(
@@ -328,44 +334,69 @@ class NebulaApi {
     }
   }
 
-  List<int>? decryptChunk(List<int> input, List<int> key, List<int> iv) {
+  List<int>? decryptChunk(List<int> input, List<int> key, List<int> iv, {List<int>? aad}) {
     if (iv.length != 12) throw ArgumentError('IV must be exactly 12 bytes');
     if (key.length != 32) throw ArgumentError('Key must be exactly 32 bytes');
     if (input.length < 16) throw ArgumentError('Input too short');
 
-    final inputPtr = calloc<ffi.Uint8>(input.length);
-    final outputPtr = calloc<ffi.Uint8>(input.length);
-    final ivPtr = calloc<ffi.Uint8>(iv.length);
+    final engine = _bindings.nebula_crypto_aes_new();
     final keyPtr = calloc<ffi.Uint8>(key.length);
-
+    final ivPtr = calloc<ffi.Uint8>(iv.length);
+    
     try {
-      for (int i = 0; i < input.length; i++) {
-        inputPtr[i] = input[i];
-      }
-      for (int i = 0; i < iv.length; i++) {
-        ivPtr[i] = iv[i];
-      }
-      for (int i = 0; i < key.length; i++) {
-        keyPtr[i] = key[i];
+      for (int i = 0; i < key.length; i++) keyPtr[i] = key[i];
+      for (int i = 0; i < iv.length; i++) ivPtr[i] = iv[i];
+
+      final initRes = _bindings.nebula_crypto_aes_init(engine, keyPtr, ivPtr, false);
+      if (initRes != 0) return null;
+
+      if (aad != null && aad.isNotEmpty) {
+        final aadPtr = calloc<ffi.Uint8>(aad.length);
+        try {
+          for (int i = 0; i < aad.length; i++) aadPtr[i] = aad[i];
+          _bindings.nebula_crypto_aes_set_aad(engine, aadPtr, aad.length);
+        } finally {
+          calloc.free(aadPtr);
+        }
       }
 
-      final resultLen = _bindings.aes_decrypt_chunk(
-        inputPtr,
-        input.length,
-        outputPtr,
-        keyPtr,
-        key.length,
-        ivPtr,
-      );
+      final ciphertextLen = input.length - 16;
+      final tag = input.sublist(ciphertextLen);
+      final ciphertext = input.sublist(0, ciphertextLen);
 
-      if (resultLen < 0) return null;
+      final inBuffer = calloc<ffi.Uint8>(ciphertext.length);
+      final outBuffer = calloc<ffi.Uint8>(ciphertext.length);
+      final outLenPtr = calloc<ffi.Int32>();
+      final tagBuffer = calloc<ffi.Uint8>(16);
 
-      return List<int>.generate(resultLen, (i) => outputPtr[i]);
+      try {
+        for (int i = 0; i < ciphertext.length; i++) inBuffer[i] = ciphertext[i];
+        for (int i = 0; i < 16; i++) tagBuffer[i] = tag[i];
+
+        final updateRes = _bindings.nebula_crypto_aes_update(
+          engine,
+          inBuffer,
+          ciphertext.length,
+          outBuffer,
+          outLenPtr,
+        );
+        if (updateRes != 0) return null;
+
+        final finalRes = _bindings.nebula_crypto_aes_decrypt_finalize(engine, tagBuffer);
+        if (finalRes != 0) return null;
+
+        final producedLen = outLenPtr.value;
+        return List<int>.generate(producedLen, (i) => outBuffer[i]);
+      } finally {
+        calloc.free(inBuffer);
+        calloc.free(outBuffer);
+        calloc.free(outLenPtr);
+        calloc.free(tagBuffer);
+      }
     } finally {
-      calloc.free(inputPtr);
-      calloc.free(outputPtr);
-      calloc.free(ivPtr);
       calloc.free(keyPtr);
+      calloc.free(ivPtr);
+      _bindings.nebula_crypto_aes_free(engine);
     }
   }
 
@@ -482,15 +513,17 @@ class NebulaApi {
     }
   }
 
-  int upsertFolder(String id, String? parentId, String name) {
+  int upsertFolder(String id, String? parentId, String name, {int? timestamp}) {
     final idPtr = id.toNativeUtf8();
     final pIdPtr = parentId?.toNativeUtf8();
     final namePtr = name.toNativeUtf8();
+    final ts = timestamp ?? TelegramService.instance.serverTime;
     try {
       return _bindings.nebula_upsert_folder(
         idPtr.cast<ffi.Char>(),
         pIdPtr?.cast<ffi.Char>() ?? ffi.nullptr,
         namePtr.cast<ffi.Char>(),
+        ts,
       );
     } finally {
       calloc.free(idPtr);
@@ -499,11 +532,13 @@ class NebulaApi {
     }
   }
 
-  int upsertFile(String id, String? folderId, String name, int size, int manifestMsgId, String? mimeType) {
+  int upsertFile(String id, String? folderId, String name, int size, int manifestMsgId, String? mimeType, {int? timestamp}) {
     final idPtr = id.toNativeUtf8();
     final fIdPtr = folderId?.toNativeUtf8();
     final namePtr = name.toNativeUtf8();
     final mimePtr = mimeType?.toNativeUtf8();
+    final ts = timestamp ?? TelegramService.instance.serverTime;
+
     try {
       return _bindings.nebula_upsert_file(
         idPtr.cast<ffi.Char>(),
@@ -512,6 +547,7 @@ class NebulaApi {
         size,
         manifestMsgId,
         mimePtr?.cast<ffi.Char>() ?? ffi.nullptr,
+        ts,
       );
     } finally {
       calloc.free(idPtr);
@@ -521,28 +557,38 @@ class NebulaApi {
     }
   }
 
-  int deleteItem(String id, {int timestamp = 0}) {
+  int deleteItem(String id, {int? timestamp}) {
     final idPtr = id.toNativeUtf8();
+    final ts = timestamp ?? TelegramService.instance.serverTime;
     try {
-      return _bindings.nebula_delete_item(idPtr.cast<ffi.Char>(), timestamp);
+      return _bindings.nebula_delete_item(idPtr.cast<ffi.Char>(), ts);
     } finally {
       calloc.free(idPtr);
     }
   }
 
-  /// Move a file or folder to a new parent.
-  /// Returns 0 on success, -2 on cyclic dependency, -3 on item not found.
-  int updateItemParent(String id, String newParentId) {
+  int updateItemParent(String id, String newParentId, {int? timestamp}) {
     final idPtr = id.toNativeUtf8();
     final parentPtr = newParentId.toNativeUtf8();
+    final ts = timestamp ?? TelegramService.instance.serverTime;
     try {
       return _bindings.nebula_update_item_parent(
         idPtr.cast<ffi.Char>(),
         parentPtr.cast<ffi.Char>(),
+        ts,
       );
     } finally {
       calloc.free(idPtr);
       calloc.free(parentPtr);
+    }
+  }
+
+  int wipeLocalVfs() {
+    try {
+      return _bindings.nebula_wipe_local_vfs();
+    } catch (e) {
+      _NebulaLogger.d('Failed to wipe VFS: $e');
+      return -1;
     }
   }
 
@@ -604,6 +650,119 @@ class NebulaApi {
       if (resultPtr != ffi.nullptr) {
         _bindings.nebula_free_string(resultPtr.cast());
       }
+    }
+  }
+
+  bool saveUploadJob(String filePath, int lastModified, int fileSize, String fileId) {
+    final pathPtr = filePath.toNativeUtf8();
+    final idPtr = fileId.toNativeUtf8();
+    try {
+      return _bindings.nebula_save_upload_job(
+        pathPtr.cast<ffi.Char>(),
+        lastModified,
+        fileSize,
+        idPtr.cast<ffi.Char>(),
+      ) == 0;
+    } finally {
+      calloc.free(pathPtr);
+      calloc.free(idPtr);
+    }
+  }
+
+  bool saveUploadCheckpoint(String filePath, int chunkIndex, int msgId) {
+    final pathPtr = filePath.toNativeUtf8();
+    try {
+      return _bindings.nebula_save_upload_checkpoint(
+        pathPtr.cast<ffi.Char>(),
+        chunkIndex,
+        msgId,
+      ) == 0;
+    } finally {
+      calloc.free(pathPtr);
+    }
+  }
+
+  String? getUploadJob(String filePath) {
+    final pathPtr = filePath.toNativeUtf8();
+    final buffer = calloc<ffi.Char>(2048);
+    try {
+      final len = _bindings.nebula_get_upload_job(pathPtr.cast<ffi.Char>(), buffer, 2048);
+      if (len < 0) return null;
+      final str = buffer.cast<Utf8>().toDartString();
+      if (str == 'null') return null;
+      return str;
+    } finally {
+      calloc.free(pathPtr);
+      calloc.free(buffer);
+    }
+  }
+
+  String getUploadCheckpoints(String filePath) {
+    final pathPtr = filePath.toNativeUtf8();
+    final maxLen = 1024 * 1024;
+    final buffer = calloc<ffi.Char>(maxLen);
+    try {
+      final len = _bindings.nebula_get_upload_checkpoints(pathPtr.cast<ffi.Char>(), buffer, maxLen);
+      if (len < 0) return '[]';
+      return buffer.cast<Utf8>().toDartString();
+    } finally {
+      calloc.free(pathPtr);
+      calloc.free(buffer);
+    }
+  }
+
+  bool deleteUploadJob(String filePath) {
+    final pathPtr = filePath.toNativeUtf8();
+    try {
+      return _bindings.nebula_delete_upload_job(pathPtr.cast<ffi.Char>()) == 0;
+    } finally {
+      calloc.free(pathPtr);
+    }
+  }
+
+  int encryptFile(String inputPath, String outputPath, List<int> key, List<int> iv, {List<int>? aad, required Uint8List outTag, int offset = 0, int length = -1}) {
+    if (iv.length != 12) throw ArgumentError('IV must be exactly 12 bytes');
+    if (key.length != 32) throw ArgumentError('Key must be exactly 32 bytes');
+    if (outTag.length != 16) throw ArgumentError('outTag must be exactly 16 bytes');
+
+    final inputPathPtr = inputPath.toNativeUtf8();
+    final outputPathPtr = outputPath.toNativeUtf8();
+    final keyPtr = calloc<ffi.Uint8>(key.length);
+    final ivPtr = calloc<ffi.Uint8>(iv.length);
+    final aadPtr = aad != null ? calloc<ffi.Uint8>(aad.length) : ffi.nullptr;
+    final tagPtr = calloc<ffi.Uint8>(16);
+
+    try {
+      for (int i = 0; i < key.length; i++) keyPtr[i] = key[i];
+      for (int i = 0; i < iv.length; i++) ivPtr[i] = iv[i];
+      if (aad != null) {
+        for (int i = 0; i < aad.length; i++) aadPtr[i] = aad[i];
+      }
+
+      final result = _bindings.aes_encrypt_file(
+        inputPathPtr.cast<ffi.Char>(),
+        outputPathPtr.cast<ffi.Char>(),
+        keyPtr,
+        ivPtr,
+        aadPtr,
+        aad?.length ?? 0,
+        tagPtr,
+        offset,
+        length,
+      );
+
+      if (result == 0) {
+        for (int i = 0; i < 16; i++) outTag[i] = tagPtr[i];
+      }
+
+      return result;
+    } finally {
+      calloc.free(inputPathPtr);
+      calloc.free(outputPathPtr);
+      calloc.free(keyPtr);
+      calloc.free(ivPtr);
+      if (aadPtr != ffi.nullptr) calloc.free(aadPtr);
+      calloc.free(tagPtr);
     }
   }
 }

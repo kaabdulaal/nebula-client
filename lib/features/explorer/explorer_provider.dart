@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../core/api/nebula_api.dart';
-import '../../core/models/file_node.dart';
-import '../../core/services/sync_engine.dart';
-import '../../core/services/thumbnail_service.dart';
+import 'package:nebula_client/core/api/nebula_api.dart';
+import 'package:nebula_client/core/models/file_node.dart';
+import 'package:nebula_client/core/services/sync_engine.dart';
+import 'package:nebula_client/core/services/thumbnail_service.dart';
+import 'package:nebula_client/core/services/telegram_service.dart';
+import 'package:nebula_client/core/services/event_bus.dart';
 
 final syncEngineProvider = ChangeNotifierProvider<SyncEngine>((ref) {
   return SyncEngine();
@@ -86,7 +88,28 @@ class ExplorerNotifier extends StateNotifier<ExplorerState> {
     folderNames: {'root': 'Root'},
   )) {
     _initRefresh();
+    _setupEventListeners();
   }
+
+  void _setupEventListeners() {
+    EventBus().on<FileUploadedEvent>().listen((event) {
+      if (event.node.parentId == state.currentFolderId || 
+          (event.node.parentId == 'root' && state.currentFolderId == 'root')) {
+        _log('Reactive Update: Optimistically adding ${event.node.name} to view.');
+        
+        final existing = state.files.any((f) => f.id == event.node.id);
+        if (!existing) {
+          final newFiles = [...state.files, event.node];
+          newFiles.sort((a, b) {
+            if (a.type != b.type) return a.type == FileNodeType.folder ? -1 : 1;
+            return a.name.compareTo(b.name);
+          });
+          state = state.copyWith(files: newFiles);
+        }
+      }
+    });
+  }
+
 
   String get currentFolderId => state.currentFolderId;
   Set<String> get selectedIds => state.selectedIds;
@@ -162,8 +185,11 @@ class ExplorerNotifier extends StateNotifier<ExplorerState> {
 
   Future<void> createFolder(String name) async {
     try {
-      final id = 'folder_${DateTime.now().millisecondsSinceEpoch}';
-      NebulaApi.instance.upsertFolder(id, state.currentFolderId, name);
+      final serverTime = TelegramService.instance.serverTime;
+      final serverDateTime = DateTime.fromMillisecondsSinceEpoch(serverTime * 1000);
+      
+      final id = 'folder_${serverTime}_${DateTime.now().millisecondsSinceEpoch % 1000}';
+      NebulaApi.instance.upsertFolder(id, state.currentFolderId, name, timestamp: serverTime);
       
       final node = FileNode(
         id: id,
@@ -173,11 +199,10 @@ class ExplorerNotifier extends StateNotifier<ExplorerState> {
         size: 0,
         syncStatus: SyncStatus.synced,
         mimeType: 'application/octet-stream',
-        createdAt: DateTime.now(),
-        modifiedAt: DateTime.now(),
+        createdAt: serverDateTime,
+        modifiedAt: serverDateTime,
       );
 
-      // Instant Delta Push
       await SyncEngine().broadcastManifest(node);
       SyncEngine().scheduleAutoPush();
       await refresh();
@@ -210,8 +235,6 @@ class ExplorerNotifier extends StateNotifier<ExplorerState> {
     }
   }
 
-  /// Move all selected items to [targetFolderId].
-  /// Returns the number of items moved, or -2 if a cyclic move was detected.
   Future<int> moveSelected(String targetFolderId) async {
     if (state.selectedIds.isEmpty) return 0;
 
@@ -219,25 +242,32 @@ class ExplorerNotifier extends StateNotifier<ExplorerState> {
     int moved = 0;
     bool cyclicDetected = false;
 
+    final serverTime = TelegramService.instance.serverTime;
+    final serverDateTime = DateTime.fromMillisecondsSinceEpoch(serverTime * 1000);
+
     for (final id in idsToMove) {
-      final rc = NebulaApi.instance.updateItemParent(id, targetFolderId);
+      final rc = NebulaApi.instance.updateItemParent(id, targetFolderId, timestamp: serverTime);
       if (rc == 0) {
         moved++;
-        // Re-broadcast the moved item as a manifest update
         final node = state.files.firstWhere(
           (n) => n.id == id,
           orElse: () => FileNode(
             id: id, parentId: targetFolderId, type: FileNodeType.file,
             syncStatus: SyncStatus.synced, name: '', size: 0,
-            mimeType: '', createdAt: DateTime.now(), modifiedAt: DateTime.now(),
+            mimeType: '', createdAt: serverDateTime, modifiedAt: serverDateTime,
           ),
         );
-        // Create updated node with new parent
         final updatedNode = FileNode(
-          id: node.id, parentId: targetFolderId, type: node.type,
-          syncStatus: node.syncStatus, name: node.name, size: node.size,
-          mimeType: node.mimeType, manifestMsgId: node.manifestMsgId,
-          createdAt: node.createdAt, modifiedAt: DateTime.now(),
+          id: node.id,
+          parentId: targetFolderId,
+          type: node.type,
+          syncStatus: node.syncStatus,
+          name: node.name,
+          size: node.size,
+          mimeType: node.mimeType,
+          manifestMsgId: node.manifestMsgId,
+          createdAt: node.createdAt,
+          modifiedAt: serverDateTime,
         );
         await SyncEngine().broadcastManifest(updatedNode);
       } else if (rc == -2) {
@@ -281,7 +311,6 @@ class ExplorerNotifier extends StateNotifier<ExplorerState> {
       } else if (index != -1) {
         newStack = state.navigationStack.sublist(0, index);
       } else {
-        // Fallback or root if not found
         newStack = [];
         id = 'root';
       }
@@ -345,7 +374,6 @@ class ExplorerNotifier extends StateNotifier<ExplorerState> {
         );
       }
       
-      // Instant Delta Push
       await SyncEngine().broadcastManifest(node);
     } catch (e) {
       _log('addNode failed: $e');
@@ -372,14 +400,13 @@ class ExplorerNotifier extends StateNotifier<ExplorerState> {
   Future<void> loadThumbnail(FileNode node) async {
     if (state.thumbnails.containsKey(node.id)) return;
     
-    final vmk = SyncEngine().masterKeySnapshot;
-    if (vmk == null) return;
-
-    final bytes = await ThumbnailService().getThumbnail(node, vmk);
+    final bytes = await ThumbnailService().getThumbnail(node);
     if (bytes != null) {
-      state = state.copyWith(
-        thumbnails: {...state.thumbnails, node.id: bytes},
-      );
+      if (mounted) {
+        state = state.copyWith(
+          thumbnails: {...state.thumbnails, node.id: bytes},
+        );
+      }
     }
   }
 

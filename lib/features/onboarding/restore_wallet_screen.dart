@@ -7,12 +7,6 @@ import '../../core/auth/auth_state.dart';
 import '../../core/services/vault_anchor_service.dart';
 import '../../core/services/telegram_service.dart';
 
-/// Restore Wallet Screen — mnemonic recovery flow.
-///
-/// Used ONLY when the user has lost their password or no cloud metadata exists.
-/// Requires the 12-word recovery phrase plus a new vault password.
-///
-/// For password-only cloud restore, see [CloudUnlockScreen].
 class RestoreWalletScreen extends ConsumerStatefulWidget {
   const RestoreWalletScreen({super.key});
 
@@ -63,7 +57,6 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
     final password = _passwordController.text;
     final confirm = _confirmPasswordController.text;
 
-    // Validation
     if (mnemonic.isEmpty) {
       if (mounted) setState(() => _error = 'Please enter your 12-word recovery phrase.');
       return;
@@ -94,7 +87,6 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
 
     try {
       final notifier = ref.read(authProvider.notifier);
-      // Restoration Guard — verify mnemonic matches cloud anchor
       if (!_guardWarningShown) {
         final guardResult = await _runRestorationGuard(mnemonic);
         if (guardResult == RestorationGuardResult.mismatch) {
@@ -200,7 +192,6 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
             ),
             const SizedBox(height: 32),
 
-            // Mnemonic field
             TextField(
               controller: _mnemonicController,
               maxLines: 3,
@@ -213,7 +204,6 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
             ),
             const SizedBox(height: 24),
 
-            // Password field
             TextField(
               controller: _passwordController,
               obscureText: true,
@@ -225,7 +215,6 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
             ),
             const SizedBox(height: 16),
 
-            // Confirm password
             TextField(
               controller: _confirmPasswordController,
               obscureText: true,
@@ -238,7 +227,6 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
             ),
 
 
-            // Error
             if (_error != null) ...[
               const SizedBox(height: 24),
               Text(
@@ -248,7 +236,6 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
             ],
             const SizedBox(height: 48),
 
-            // Restore button
             SizedBox(
               width: double.infinity,
               height: 56,

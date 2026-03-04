@@ -12,8 +12,11 @@ import '../api/nebula_api.dart';
 import '../repositories/credentials_repository.dart';
 import '../services/vault_anchor_service.dart';
 import '../services/sync_engine.dart';
+import '../services/thumbnail_service.dart';
 import '../utils/crypto_utils.dart'; 
 import '../security/secret_store.dart';
+import '../security/security_manager.dart';
+import '../../features/upload/upload_orchestrator.dart';
 import 'auth_repository.dart';
 import 'auth_state.dart';
 
@@ -424,16 +427,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
       }
 
       _discoveryPending = false;
-      final metadata = await anchorService.getCloudMetadata(channelId);
-      
-      if (metadata == null && password != null) {
-        print('[Auth] Metadata missing on existing anchor. Triggering HEAL...');
-        await anchorService.healMetadata(
-          channelId: channelId,
-          mnemonic: mnemonicStr,
-          password: password,
-        );
-      }
 
       if (!mounted) return;
 
@@ -478,9 +471,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
 
     if (mnemonic == null) {
-       final storedMnemonic = NebulaApi.instance.getSetting('vault_mnemonic');
+       final storedMnemonic = await SecretStore.readMnemonic();
        if (storedMnemonic != null) {
-          print('[Auth] anchorVault(): recovered mnemonic from secure vault.');
+          print('[Auth] anchorVault(): recovered mnemonic from SecretStore.');
           mnemonic = CryptoUtils.mnemonicToBytes(storedMnemonic);
        }
     }
@@ -492,6 +485,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
     _isAnchoring = true;
     try {
+      if (state.status == AuthStateStatus.needsVaultSetup && forcedMnemonic == null) {
+        print('[Auth] New Vault Setup detected. Performing safety WIPE before creation.');
+        await _wipeVault(preserveChannel: false);
+      }
+
       final mnemonicStr = CryptoUtils.bytesToMnemonic(mnemonic);
       final result = await NebulaApi.instance.setPassword(mnemonicStr, password);
 
@@ -499,7 +497,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
         print('[Auth] Vault Created Locally. Now storing Cloud Metadata...');
         state = state.copyWith(masterKey: 'VAULT_CREATED');
 
-        // Save password for future biometric access (Biometric Hook Completion)
         await SecretStore.saveVaultPassword(password);
 
         if (_repository.currentAuthState?['@type'] == 'authorizationStateReady') {
@@ -543,10 +540,19 @@ class AuthNotifier extends StateNotifier<AuthState> {
                 epoch: timestamp,
                 identityHash: identityHash,
               );
-              print('[Auth] Cloud Metadata stored and local anchor updated.');
+              
+              NebulaApi.instance.setSetting('vault_mnemonic_salt', hex.encode(salt));
+              NebulaApi.instance.setSetting('vault_mnemonic_iv', hex.encode(iv));
+              NebulaApi.instance.setSetting('vault_mnemonic_enc', hex.encode(encMnemonic));
+              
+              print('[Auth] Cloud Metadata stored and local anchor updated (with encrypted mnemonic backup).');
             }
           }
         }
+        await SecretStore.saveMnemonic(mnemonicStr);
+        final vmk = NebulaApi.instance.deriveMasterKeyBytes(mnemonicStr);
+        SecurityManager().setMasterKey(vmk);
+        debugPrint('[Auth] VMK pushed to SecurityManager (Anchor Path)');
         SyncEngine().pull();
       }
       return result;
@@ -594,6 +600,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
       }
 
       final mnemonicStr = CryptoUtils.bytesToMnemonic(Uint8List.fromList(mnemonicBytes));
+
+      print('[Auth] Cloud Mnemonic verified. Executing late-bound WIPE before recovery.');
+      await _wipeVault(preserveChannel: true);
       
       final result = await NebulaApi.instance.recoverVault(mnemonicStr, password);
       
@@ -621,17 +630,26 @@ class AuthNotifier extends StateNotifier<AuthState> {
         );
         print('[Auth] ANCHOR MESSAGE CONFIRMED.');
 
-        // Derive Session Key for VFS Security Hardening
         final sessionKey = await CryptoUtils.pbkdf2Async(
           password: password,
           salt: Uint8List.fromList(utf8.encode('NEBULA_SESSION_SALT')),
           iterations: 100000, 
         );
         SyncEngine().setMasterKey(sessionKey);
-        final mnemonic = NebulaApi.instance.getSetting('vault_mnemonic');
-        if (mnemonic != null) {
-          final vmk = NebulaApi.instance.deriveMasterKeyBytes(mnemonic);
-          SyncEngine().setMasterKey(vmk);
+        await SecretStore.saveMnemonic(mnemonicStr);
+        NebulaApi.instance.setSetting('vault_mnemonic_salt', cleanSalt);
+        NebulaApi.instance.setSetting('vault_mnemonic_iv', cleanIv);
+        NebulaApi.instance.setSetting('vault_mnemonic_enc', cleanEnc);
+        
+        if (mnemonicStr == null || mnemonicStr.isEmpty) {
+          throw Exception('CRITICAL: Mnemonic is missing during Restore. Aborting VMK derivation.');
+        }
+
+        final vmk = NebulaApi.instance.deriveMasterKeyBytes(mnemonicStr);
+        SecurityManager().setMasterKey(vmk);
+        debugPrint('[Auth] VMK pushed to SecurityManager (Restore Path)');
+        
+        if (mnemonicStr != null) {
           SyncEngine().initializeRealTimeListener();
         }
 
@@ -642,7 +660,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
           sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
         );
         
-        // Save password for future biometric access
         await SecretStore.saveVaultPassword(password);
         
         print('[Auth] STATE SET TO READY. Triggering initial VFS pull...');
@@ -684,12 +701,14 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   Future<void> unlockVault(String password) async {
     if (NebulaApi.instance.isInitialized) {
-      print('[Auth] CRITICAL: unlockVault called while Core is ALREADY OPEN. RECOVERING...');
-      if (mounted) {
-         state = state.copyWith(status: AuthStateStatus.ready, clearError: true);
+      debugPrint('[Auth] unlockVault: Core already open. Checking VMK status...');
+      if (SecurityManager().isReady) {
+        debugPrint('[Auth] VMK is already primed. Short-circuiting to READY.');
+        if (mounted) state = state.copyWith(status: AuthStateStatus.ready, clearError: true);
+        SyncEngine().pull(silent: true);
+        return;
       }
-      SyncEngine().pull();
-      return;
+      debugPrint('[Auth] VMK IS MISSING despite core open. Proceeding with mnemonic recovery waterfall.');
     }
 
     state = state.copyWith(status: AuthStateStatus.loading, clearError: true);
@@ -704,9 +723,19 @@ class AuthNotifier extends StateNotifier<AuthState> {
       final vaultExists = await anchorService.detectExistingVault();
       
       if (vaultExists) {
-         print('[Auth] Cloud vault detected. Bootstrapping local DB automatically...');
-         await restoreWithCloudPassword(password);
-         return;
+         if (password.isNotEmpty && state.status == AuthStateStatus.needsRestore) {
+           print('[Auth] Cloud vault detected and password provided. Executing Cloud Restore...');
+           await restoreWithCloudPassword(password);
+           return;
+         } else {
+           print('[Auth] Cloud vault detected. Redirecting to Password Entry for Cloud Restore.');
+           if (mounted) {
+             state = AuthState.needsRestore(
+               sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
+             ).copyWith(hasCloudMetadata: true);
+           }
+           return;
+         }
       } else {
          print('[Auth] No cloud vault found. Redirecting to Setup.');
          if (mounted) {
@@ -727,13 +756,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
     int result = await NebulaApi.instance.unlockWithPassword(password);
 
     if (result == 0) {
-      // 1. INSTANT SUCCESS PATH (Optimistic / Local-First)
       print('[Auth] Local unlock successful. Executing Optimistic UI Fire-and-Forget.');
       
-      // We immediately save the password so biometrics/sync can use it
       await SecretStore.saveVaultPassword(password);
       
-      // Derive Session Key for VFS Security Hardening
       final sessionKey = await CryptoUtils.pbkdf2Async(
         password: password,
         salt: Uint8List.fromList(utf8.encode('NEBULA_SESSION_SALT')),
@@ -741,23 +767,57 @@ class AuthNotifier extends StateNotifier<AuthState> {
       );
       SyncEngine().setMasterKey(sessionKey);
       
-      final mnemonic = NebulaApi.instance.getSetting('vault_mnemonic');
-      if (mnemonic != null) {
-        final vmk = NebulaApi.instance.deriveMasterKeyBytes(mnemonic);
-        SyncEngine().setMasterKey(vmk);
-        SyncEngine().initializeRealTimeListener();
+      String? mnemonicStr = await SecretStore.readMnemonic();
+      
+      if (mnemonicStr == null) {
+        debugPrint('[Auth] Secure mnemonic missing. Layer 2: Attempting DB-Encrypted fallback...');
+        try {
+          final sHex = NebulaApi.instance.getSetting('vault_mnemonic_salt');
+          final iHex = NebulaApi.instance.getSetting('vault_mnemonic_iv');
+          final eHex = NebulaApi.instance.getSetting('vault_mnemonic_enc');
+          
+          if (sHex != null && iHex != null && eHex != null) {
+            final salt = Uint8List.fromList(hex.decode(sHex.trim()));
+            final iv = Uint8List.fromList(hex.decode(iHex.trim()));
+            final enc = Uint8List.fromList(hex.decode(eHex.trim()));
+            
+            final key = await CryptoUtils.pbkdf2Async(password: password, salt: salt, iterations: 600000);
+            final decBytes = CryptoUtils.aesGcmDecrypt(enc, key, iv);
+            
+            if (decBytes != null) {
+              mnemonicStr = CryptoUtils.bytesToMnemonic(decBytes);
+              debugPrint('[Auth] Mnemonic recovered from encrypted DB. Re-seeding SecureStore.');
+              await SecretStore.saveMnemonic(mnemonicStr);
+            }
+          }
+        } catch (e) {
+          debugPrint('[Auth] DB Recovery FAILED: $e');
+        }
       }
 
-      // Immediately release the UI lock
-      state = state.copyWith(
-        status: AuthStateStatus.ready, 
-        masterKey: 'LOCAL_UNLOCKED',
-        tempPassword: password, // Keep for potential re-derivation if needed
-        clearError: true,
-        sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-      );
+      if (mnemonicStr != null && mnemonicStr.isNotEmpty) {
+        final vmk = NebulaApi.instance.deriveMasterKeyBytes(mnemonicStr);
+        SecurityManager().setMasterKey(vmk);
+        debugPrint('[Auth] VMK pushed to SecurityManager');
+        SyncEngine().initializeRealTimeListener();
+
+        state = state.copyWith(
+          status: AuthStateStatus.ready, 
+          masterKey: 'LOCAL_UNLOCKED',
+          tempPassword: password, 
+          clearError: true,
+          sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
+        );
+      } else {
+        debugPrint('[SECURITY] Unlock succeeded but mnemonic decryption failed. Likely Wrong Password.');
+        state = state.copyWith(
+          status: AuthStateStatus.locked,
+          errorMessage: 'Incorrect Password. Please try again.',
+        );
+        NebulaApi.instance.cleanup(); 
+        return;
+      }
       
-      // Background / Unawaited checks
       Future(() async {
         if (_repository.currentAuthState == null) {
            final creds = await _credsRepository.getCredentials();
@@ -777,13 +837,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
         }
 
         if (_repository.currentAuthState?['@type'] == 'authorizationStateReady') {
-           _initVaultAnchoring(manualMnemonic: mnemonic);
+           _initVaultAnchoring(manualMnemonic: mnemonicStr);
         }
         
         print('[Auth] Triggering Sync Engine Pull asynchronously...');
         SyncEngine().pull(silent: true, ignoreThreats: true);
 
-        // Async Parity check: did the password change remotely?
         final parityAnchorService = VaultAnchorService();
         final parityChannelId = await parityAnchorService.findNebulaChannel();
         if (parityChannelId != null) {
@@ -815,11 +874,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
       return;
       
     } else {
-      // 2. INSTANT FAILURE PATH
       print('[Auth] Local Vault Unlock FAILED (code: $result). Yielding to UI instantly.');
       state = state.copyWith(status: AuthStateStatus.locked, errorMessage: 'Invalid vault password.');
       
-      // Async Two-Way Shield for Remote Password Changes
       Future(() async {
         print('[Auth] Running Background Fast Cloud Verification for Failure Case...');
         final anchorService = VaultAnchorService();
@@ -841,15 +898,13 @@ class AuthNotifier extends StateNotifier<AuthState> {
               final dec = CryptoUtils.aesGcmDecrypt(encMnemonic, key, iv);
               
               if (dec != null) {
-                // SHIELD 1: Local failed, but Cloud accepted it!
-                print('[Auth] SHIELD 1: Remote password change detected! Wiping obsolete local DB...');
+                print('[Auth] SHIELD 1: Remote password change detected! Transitioning to Restore screen.');
                 NebulaApi.instance.cleanup();
-                final dbFile = File(dbPath);
-                if (dbFile.existsSync()) dbFile.deleteSync();
-
-                await restoreWithCloudPassword(password);
+                state = state.copyWith(
+                  status: AuthStateStatus.needsRestore, 
+                  errorMessage: 'Cloud password changed. Please restore your vault.'
+                );
               } else {
-                 // Genuine bad password, nothing to do since UI already shows error
                  print('[Auth] Shield 1 background check confirms bad password.');
               }
             } catch (e) {
@@ -857,11 +912,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
             }
           }
         } else if (result == 26) {
-           // Database is genuinely corrupted/missing and we have no cloud anchor
-           print('[Auth] UNRECOVERABLE: Local DB is NOTADB and Cloud is Empty. Wiping local state for fresh start.');
-           if (File(dbPath).existsSync()) File(dbPath).deleteSync();
-           await anchorService.clearLocalAnchor();
-           state = state.copyWith(status: AuthStateStatus.locked, errorMessage: 'Vault corrupted. Refreshing.');
+           print('[Auth] UNRECOVERABLE: Local DB is NOTADB and Cloud is Empty.');
+           state = state.copyWith(
+             status: AuthStateStatus.vaultCorrupted, 
+             errorMessage: 'Local vault is corrupted and no cloud backup found. Please reset.'
+           );
         }
       });
     }
@@ -886,7 +941,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = state.copyWith(status: AuthStateStatus.loading, clearError: true);
     
     try {
-      print('[Auth] Manual Mnemonic Recovery attempt...');
+      print('[Auth] Manual Mnemonic Recovery attempt. Performing pre-recovery WIPE...');
+      await _wipeVault();
+      
       final result = await NebulaApi.instance.recoverVault(mnemonic, password);
       
       if (result == 0) {
@@ -915,15 +972,19 @@ class AuthNotifier extends StateNotifier<AuthState> {
         );
         print('[Auth] ANCHOR MESSAGE CONFIRMED.');
 
-        // Derive Session Key for VFS Security Hardening
         final sessionKey = await CryptoUtils.pbkdf2Async(
           password: password,
           salt: Uint8List.fromList(utf8.encode('NEBULA_SESSION_SALT')),
           iterations: 100000, 
         );
         SyncEngine().setMasterKey(sessionKey);
+        
+        if (mnemonic == null || mnemonic.isEmpty) {
+           throw Exception('CRITICAL: Mnemonic is missing during Recovery. Aborting VMK derivation.');
+        }
+
         final vmk = NebulaApi.instance.deriveMasterKeyBytes(mnemonic);
-        SyncEngine().setMasterKey(vmk);
+        SecurityManager().setMasterKey(vmk);
         SyncEngine().initializeRealTimeListener();
 
         state = state.copyWith(
@@ -932,8 +993,24 @@ class AuthNotifier extends StateNotifier<AuthState> {
           sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
         );
         
-        // Save password for future biometric access
         await SecretStore.saveVaultPassword(password);
+        await SecretStore.saveMnemonic(mnemonic);
+        
+        try {
+          final salt = CryptoUtils.generateRandomBytes(32);
+          final iv = CryptoUtils.generateRandomBytes(12);
+          final key = await CryptoUtils.pbkdf2Async(password: password, salt: salt, iterations: 600000);
+          final enc = CryptoUtils.aesGcmEncrypt(CryptoUtils.mnemonicToBytes(mnemonic), key, iv);
+          
+          if (enc != null) {
+            NebulaApi.instance.setSetting('vault_mnemonic_salt', hex.encode(salt));
+            NebulaApi.instance.setSetting('vault_mnemonic_iv', hex.encode(iv));
+            NebulaApi.instance.setSetting('vault_mnemonic_enc', hex.encode(enc));
+            debugPrint('[Auth] Redundant encrypted mnemonic saved to DB.');
+          }
+        } catch (e) {
+          debugPrint('[Auth] Redundant DB storage FAILED: $e');
+        }
         
         print('[Auth] STATE SET TO READY. Triggering initial VFS pull...');
         SyncEngine().pull();
@@ -954,13 +1031,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  /// Locks the vault: closes C++ DB, clears RAM secrets, preserves Telegram session.
-  /// This is what the user expects when they press "Logout".
   void lockVault() {
     debugPrint('[Auth] Locking vault (preserving DB and Telegram session)...');
     if (NebulaApi.instance.isInitialized) {
       NebulaApi.instance.cleanup();
     }
+    ThumbnailService().reset();
     _tempMnemonic = null;
     _tempUnlockPassword = null;
     if (mounted) {
@@ -971,8 +1047,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
     debugPrint('[Auth] Vault locked. DB and Telegram session preserved.');
   }
 
-  /// Destroys the entire account: wipes DB, clears Telegram session, resets to initial.
-  /// Only used for "Start Fresh" / account reset scenarios.
   Future<void> destroyAccount() async {
     debugPrint('[Auth] Destroying account (full wipe)...');
     try {
@@ -986,9 +1060,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  /// Cancels a pending login: ends the TDLib auth session so the user can
-  /// re-enter their phone number. Does NOT touch the vault DB or prefs.
-  /// Used only by "Change Number" / "Back" during the auth flow.
   void cancelLogin() {
     debugPrint('[Auth] Cancelling login (ending TDLib auth session)...');
     _repository.logOut();
@@ -999,8 +1070,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
 
   void triggerRecovery() async {
-    print('[Auth] Recovery triggered. Deleting local vault while preserving Telegram.');
-    await _wipeVault();
+    print('[Auth] Recovery triggered. Transitioning to Restore screen (Non-destructive).');
     state = AuthState.needsRestore(
       sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
     );
@@ -1052,7 +1122,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  Future<void> _wipeVault() async {
+  Future<void> _wipeVault({bool preserveChannel = false}) async {
     try {
       if (NebulaApi.instance.isInitialized) {
         print('[Auth] WIPE: Closing FFI handle...');
@@ -1080,12 +1150,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
         'vault_last_sync',
       ];
       for (final key in keysToRemove) {
+        if (preserveChannel && key == 'vault_channel_id') continue;
         await prefs.remove(key);
       }
       print('[Auth] WIPE: Cleared ${keysToRemove.length} SharedPreferences keys.');
       
       final anchorService = VaultAnchorService();
-      await anchorService.clearLocalAnchor();
+      if (!preserveChannel) {
+        await anchorService.clearLocalAnchor();
+      }
       
       _tempMnemonic = null;
       _tempUnlockPassword = null;
@@ -1097,18 +1170,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
 
   Future<void> confirmSync() async {
-    print('[Auth] User confirmed sync (Audit H-01). Stopping background loops...');
+    print('[Auth] User confirmed sync. Transitioning to Restore Screen (Non-destructive).');
     _isCloudChecking = false;
     _isAnchoring = false;
     _isRestoring = false;
 
-    await _wipeVault();
-    
     if (mounted) {
       state = AuthState.needsRestore(
         sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
       );
-      print('[Auth] Vault wiped. State set to needsRestore.');
     }
   }
 
@@ -1144,9 +1214,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
   void clearOnboardingData() => state = state.copyWith(masterKey: null, clearMnemonic: true);
   void forceNewVaultSetup() async {
-    state = const AuthState.initial().copyWith(status: AuthStateStatus.loading);
-    print('[Auth] Start Fresh chosen. Wiping corrupted local DB...');
-    await _wipeVault();
+    print('[Auth] Start Fresh chosen. Transitioning to Setup (Non-destructive).');
     state = const AuthState.needsVaultSetup();
   }
   
