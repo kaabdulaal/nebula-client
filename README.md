@@ -13,11 +13,11 @@ Nebula is a decentralized, end-to-end encrypted (E2EE) cloud storage solution th
 
 - **Download the latest installer**: Go to the [Releases page](https://github.com/kaabdulaal/nebula-client/releases).
 
-    - **Windows**: Download Nebula_Setup_v0.1.0.exe and run the installer.
+    - **Windows**: Download nebula-windows-v0.1.0-alpha.exe and run the installer.
   
-    - **Android**: Download the app-release.apk directly to your device and install it.
+    - **Android**: Download the nebula-android-v0.1.0-alpha.apk directly to your device and install it.
 
-    - **Linux**: Download the nebula_client_linux.tar.gz, extract it, and run the nebula_client binary.
+    - **Linux**: Download the nebula-linux-v0.1.0-alpha.tar.gz, extract it, and run the nebula_client binary.
       
 ## Key Features
 
