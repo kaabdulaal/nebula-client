@@ -53,24 +53,11 @@ class _SeedVerificationScreenState
     }
 
     try {
-      final result = await ref.read(authProvider.notifier).anchorVault();
-
-      if (result != 0) {
-        throw Exception("Vault anchoring failed with code $result");
-      }
-
-      ref.read(authProvider.notifier).setReady();
-
-      await Future.delayed(const Duration(milliseconds: 500));
-
       if (mounted) {
-        context.go('/home');
-        
-        ref.invalidate(onboardingSeedProvider);
-        ref.read(authProvider.notifier).clearOnboardingData();
+        context.push('/master_pass');
       }
     } catch (e) {
-      if (mounted) setState(() => _error = "Failed to create vault: $e");
+      if (mounted) setState(() => _error = "Navigation failed: $e");
     } finally {
       if (mounted) {
         setState(() {

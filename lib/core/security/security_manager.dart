@@ -18,6 +18,14 @@ class SecurityManager extends ChangeNotifier {
 
   bool get isReady => _vmk != null;
 
+  bool _isKeyringHealthy = true;
+  bool get isKeyringHealthy => _isKeyringHealthy;
+
+  void setKeyringHealth(bool healthy) {
+    _isKeyringHealthy = healthy;
+    notifyListeners();
+  }
+
   void setMasterKey(Uint8List key) {
     _vmk = Uint8List.fromList(key);
     if (!_firstKeyCompleter.isCompleted) {

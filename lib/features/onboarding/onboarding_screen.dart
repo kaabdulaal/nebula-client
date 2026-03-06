@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/repositories/credentials_repository.dart';
 import '../../core/auth/auth_provider.dart';
+import '../../core/auth/auth_state.dart';
 
 class OnboardingScreen extends ConsumerStatefulWidget {
   const OnboardingScreen({super.key});
@@ -37,7 +38,6 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
     try {
       final repo = CredentialsRepository();
-      bool success = false;
 
       if (_isCustom) {
         final apiId = int.tryParse(_apiIdController.text);
@@ -50,32 +50,29 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           });
           return;
         }
-        repo.saveCredentials(apiId, apiHash, isCustom: true);
-        success = true;
+        await repo.saveCredentials(apiId, apiHash, isCustom: true);
       } else {
-        success = await repo.syncCredentials();
-        if (!success) {
-           final creds = await repo.getCredentials(); 
-           if (creds != null) success = true;
-        }
+        await repo.clearCustomCredentials();
       }
 
-      if (success) {
-        if (mounted) {
-          ref.invalidate(authProvider); 
-          context.go('/auth'); 
-        }
-      } else {
+      if (!mounted) return;
+      await ref.read(authProvider.notifier).completeOnboarding();
+      
+      if (!mounted) return;
+      final authState = ref.read(authProvider);
+      if (authState.status == AuthStateStatus.initial && authState.errorMessage != null) {
         setState(() {
-          _error = "Failed to load configuration. Check internet connection.";
+          _error = authState.errorMessage;
           _isLoading = false;
         });
       }
     } catch (e) {
-      setState(() {
-        _error = "Error: $e";
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _error = "Error: $e";
+          _isLoading = false;
+        });
+      }
     }
   }
 

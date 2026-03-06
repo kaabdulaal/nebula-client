@@ -141,6 +141,17 @@ class CredentialsRepository {
       _ffi.setSetting('manual_api_hash', apiHash);
     }
   }
+
+  Future<void> clearCustomCredentials() async {
+    _memoryCredentials = null;
+    _ffi.setSetting('is_custom_credentials', 'false');
+    _ffi.setSetting('manual_api_id', '');
+    _ffi.setSetting('manual_api_hash', '');
+    
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('cached_api_id');
+    await prefs.remove('cached_api_hash');
+  }
   
   Future<void> persistMemoryCredentials() async {
     if (_memoryCredentials != null) {

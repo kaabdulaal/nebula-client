@@ -6,6 +6,7 @@ import '../../core/repositories/credentials_repository.dart';
 import '../../core/services/telegram_service.dart';
 import '../../core/api/nebula_api.dart';
 import '../../core/auth/auth_provider.dart';
+import '../../core/auth/auth_state.dart';
 
 class CartridgeSetupScreen extends ConsumerStatefulWidget {
   const CartridgeSetupScreen({super.key});
@@ -41,7 +42,6 @@ class _CartridgeSetupScreenState extends ConsumerState<CartridgeSetupScreen> {
 
     try {
       final repo = CredentialsRepository();
-      TelegramCredentials? creds;
 
       if (_isCustom) {
         final apiId = int.tryParse(_apiIdController.text);
@@ -54,40 +54,29 @@ class _CartridgeSetupScreenState extends ConsumerState<CartridgeSetupScreen> {
           });
           return;
         }
-        repo.saveCredentials(apiId, apiHash, isCustom: true);
-        creds = TelegramCredentials(apiId: apiId, apiHash: apiHash);
+        await repo.saveCredentials(apiId, apiHash, isCustom: true);
       } else {
-        final success = await repo.syncCredentials();
-        if (success) {
-          creds = await repo.getCredentials();
-        } else {
-          creds = await repo.getCredentials();
-        }
+        await repo.clearCustomCredentials();
       }
 
-      if (creds != null) {
-        debugPrint('[CartridgeSetup] Injecting credentials: ${creds.apiId}');
-        final docsDir = await getNebulaDocumentsDirectory();
-        final dbPath = p.join(docsDir.path, 'nebula_tdlib');
-        await TelegramService().init(apiId: creds.apiId, apiHash: creds.apiHash, dbPath: dbPath);
-
-        if (mounted) {
-          context.go('/auth');
-        }
-      } else {
+      if (!mounted) return;
+      await ref.read(authProvider.notifier).completeOnboarding();
+      
+      if (!mounted) return;
+      final authState = ref.read(authProvider);
+      if (authState.status == AuthStateStatus.initial && authState.errorMessage != null) {
         setState(() {
-          _error = "Failed to obtain credentials. Try manual input.";
+          _error = authState.errorMessage;
           _isLoading = false;
-          _isCustom = true; 
-          _pageController.animateToPage(4,
-              duration: const Duration(milliseconds: 300), curve: Curves.ease);
         });
       }
     } catch (e) {
-      setState(() {
-        _error = "Error: $e";
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _error = "Error: $e";
+          _isLoading = false;
+        });
+      }
     }
   }
 

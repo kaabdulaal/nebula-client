@@ -16,6 +16,7 @@ enum AuthStateStatus {
   needsRestore, 
   syncRequired, 
   rekeyRequired,  
+  vaultOrphaned,
   ready,
   error,
 }
@@ -220,6 +221,19 @@ class AuthState {
 
   const AuthState.vaultCorrupted({this.sessionTimestamp, this.errorMessage})
       : status = AuthStateStatus.vaultCorrupted,
+        masterKey = null,
+        mnemonic = null,
+        phoneNumber = null,
+        tempPassword = null,
+        qrLink = null,
+        preferPhoneNumber = false,
+        tgUserId = null,
+        isDiscoveryFallback = false,
+        hasCloudMetadata = false,
+        cloudChannelId = null;
+
+  const AuthState.vaultOrphaned({this.sessionTimestamp, this.errorMessage})
+      : status = AuthStateStatus.vaultOrphaned,
         masterKey = null,
         mnemonic = null,
         phoneNumber = null,

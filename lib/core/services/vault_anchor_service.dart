@@ -25,6 +25,16 @@ class VaultAnchorService {
   VaultAnchorService({TelegramService? telegramService})
       : _telegram = telegramService ?? TelegramService();
 
+  Future<bool> checkChannelExistence(int chatId) async {
+    try {
+      final chat = await _getChat(chatId);
+      if (chat == null) return false;
+      return chat['title'] == _channelName;
+    } catch (e) {
+      return false;
+    }
+  }
+
   Future<void> waitForTelegramReady() async {
     if (_telegram.isAuthorized) return;
 

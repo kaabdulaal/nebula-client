@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -18,6 +19,16 @@ class _MasterPassScreenState extends ConsumerState<MasterPassScreen> {
   bool _isValid = false;
   String? _errorMessage;
 
+  int _loadingMessageIndex = 0;
+  Timer? _loadingTimer;
+
+  static const _loadingMessages = [
+    "Generating encryption keys...",
+    "Establishing secure connection to Telegram...",
+    "Creating decentralized vault...",
+    "Anchoring metadata...",
+  ];
+
   @override
   void initState() {
     super.initState();
@@ -27,11 +38,31 @@ class _MasterPassScreenState extends ConsumerState<MasterPassScreen> {
 
   @override
   void dispose() {
+    _loadingTimer?.cancel();
     _passController.removeListener(_validateInputs);
     _confirmController.removeListener(_validateInputs);
     _passController.dispose();
     _confirmController.dispose();
     super.dispose();
+  }
+
+  void _startLoadingTimer() {
+    setState(() {
+      _loadingMessageIndex = 0;
+    });
+    _loadingTimer?.cancel();
+    _loadingTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (mounted) {
+        setState(() {
+          _loadingMessageIndex = (timer.tick) % _loadingMessages.length;
+        });
+      }
+    });
+  }
+
+  void _stopLoadingTimer() {
+    _loadingTimer?.cancel();
+    _loadingTimer = null;
   }
 
   void _validateInputs() {
@@ -51,14 +82,33 @@ class _MasterPassScreenState extends ConsumerState<MasterPassScreen> {
       _isLoading = true;
       _errorMessage = null;
     });
+    _startLoadingTimer();
 
     try {
       final password = _passController.text;
+      final authNotifier = ref.read(authProvider.notifier);
 
-      ref.read(authProvider.notifier).setTempPassword(password);
+      authNotifier.setTempPassword(password);
+
+      final result = await authNotifier.anchorVault();
+
+      if (result != 0) {
+        if (mounted) {
+          setState(() {
+            _errorMessage = 'Vault Creation Failed (Error $result). Please try a different password.';
+            _isLoading = false;
+          });
+          _stopLoadingTimer();
+        }
+        return;
+      }
+
+      authNotifier.setReady();
 
       if (mounted) {
-        context.push('/seed_intro');
+        _stopLoadingTimer();
+        context.go('/home');
+        authNotifier.clearOnboardingData();
       }
     } catch (e) {
       if (mounted) {
@@ -69,6 +119,7 @@ class _MasterPassScreenState extends ConsumerState<MasterPassScreen> {
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
+        _stopLoadingTimer();
       }
     }
   }
@@ -106,7 +157,7 @@ class _MasterPassScreenState extends ConsumerState<MasterPassScreen> {
                           SizedBox(width: 12),
                           Expanded(
                             child: Text(
-                              'This password cannot be recovered. If you lose it, you lose your data.',
+                              'The Master Password can be changed later in settings. However, your 12-word Seed Phrase is permanent and is the ONLY way to recover your vault if you forget this password. If you lose both, your data is lost forever.',
                               style: TextStyle(
                                   fontSize: 13, fontWeight: FontWeight.w500),
                             ),
@@ -159,10 +210,26 @@ class _MasterPassScreenState extends ConsumerState<MasterPassScreen> {
                   FilledButton(
                     onPressed: (_isLoading || !_isValid) ? null : _handleSetup,
                     child: _isLoading
-                        ? const SizedBox(
-                            height: 20,
-                            width: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
+                        ? Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const SizedBox(
+                                height: 20,
+                                width: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Flexible(
+                                child: Text(
+                                  _loadingMessages[_loadingMessageIndex],
+                                  style: const TextStyle(fontSize: 14),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
                           )
                         : const Text('Next'),
                   ),

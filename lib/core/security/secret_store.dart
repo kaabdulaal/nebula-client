@@ -154,4 +154,23 @@ class SecretStore {
       debugPrint('SecretStore: Failed to clear mnemonic: $e');
     }
   }
+
+  static bool? _cachedKeyringHealth;
+
+  static Future<bool> isKeyringHealthy() async {
+    if (_cachedKeyringHealth != null) return _cachedKeyringHealth!;
+
+    try {
+      const testKey = 'nebula_health_check';
+      await _storage.write(key: testKey, value: 'ok');
+      final val = await _storage.read(key: testKey);
+      await _storage.delete(key: testKey);
+      _cachedKeyringHealth = (val == 'ok');
+      return _cachedKeyringHealth!;
+    } catch (e) {
+      debugPrint('SecretStore: Keyring health check FAILED: $e');
+      _cachedKeyringHealth = false;
+      return false;
+    }
+  }
 }

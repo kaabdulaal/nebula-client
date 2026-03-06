@@ -86,3 +86,5 @@ analyze_results*.txt
 *.enc
 *.log
 temp_*
+lib/firebase_options.dart
+android/app/google-services.json

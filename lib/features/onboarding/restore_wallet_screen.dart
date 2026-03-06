@@ -135,7 +135,6 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
       return RestorationGuardResult.error;
     }
   }
-
   Future<bool> _showGuardDialog(
       {required String title, required String message}) async {
     if (!mounted) return false;
@@ -161,6 +160,41 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
       ),
     );
     return result ?? false;
+  }
+
+  Future<void> _showFactoryResetDialog() async {
+    if (!mounted) return;
+    final proceed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF2A2A2A),
+        title: const Text('⚠️ Factory Reset', style: TextStyle(color: Colors.red)),
+        content: const Text(
+          'This will PERMANENTLY DELETE your local vault (nebula.db) and all un-synced data. '
+          'This action cannot be undone.\n\n'
+          'Use this only if you want to start fresh and create a new vault.',
+          style: TextStyle(color: Colors.white70, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('WIPE EVERYTHING'),
+          ),
+        ],
+      ),
+    );
+
+    if (proceed == true && mounted) {
+      setState(() => _isLoading = true);
+      await ref.read(authProvider.notifier).destroyAccount();
+      if (mounted) context.go('/onboarding');
+    }
   }
 
   @override
@@ -244,6 +278,16 @@ class _RestoreWalletScreenState extends ConsumerState<RestoreWalletScreen> {
                 child: _isLoading
                     ? const CircularProgressIndicator()
                     : const Text('Recover & Unlock'),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Center(
+              child: TextButton(
+                onPressed: _isLoading ? null : _showFactoryResetDialog,
+                child: const Text(
+                  'Start Fresh / Factory Reset',
+                  style: TextStyle(color: Colors.redAccent, decoration: TextDecoration.underline),
+                ),
               ),
             ),
           ],

@@ -1,7 +1,15 @@
 import 'dart:io';
+import 'dart:isolate';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+import 'firebase_options.dart'; 
+
 import 'app/router.dart';
 import 'core/auth/auth_provider.dart';
 import 'core/auth/auth_state.dart';
@@ -48,6 +56,25 @@ class NebulaApp extends ConsumerWidget {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
+    try {
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+
+      FlutterError.onError = (errorDetails) {
+        FirebaseCrashlytics.instance.recordFlutterFatalError(errorDetails);
+      };
+
+      PlatformDispatcher.instance.onError = (error, stack) {
+        FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+        return true;
+      };
+    } catch (e) {
+      debugPrint('Firebase initialization failed: $e');
+    }
+  }
 
   if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
     await windowManager.ensureInitialized();
@@ -68,9 +95,47 @@ Future<void> main() async {
     });
   }
 
+  if (!kIsWeb && Platform.isAndroid) {
+  }
+
+
   runApp(
     const ProviderScope(
       child: NebulaApp(),
     ),
   );
+}
+
+@pragma('vm:entry-point')
+void startCallback() {
+  FlutterForegroundTask.setTaskHandler(SyncTaskHandler());
+}
+
+class SyncTaskHandler extends TaskHandler {
+  @override
+  Future<void> onStart(DateTime timestamp, SendPort? sendPort) async {
+    print('Nebula Foreground Service Started');
+  }
+
+  void onReceiveData(Object data) {
+  }
+
+  @override
+  Future<void> onRepeatEvent(DateTime timestamp, SendPort? sendPort) async {
+  }
+
+  @override
+  Future<void> onDestroy(DateTime timestamp, SendPort? sendPort) async {
+    print('Nebula Foreground Service Stopped');
+  }
+
+  @override
+  void onNotificationButtonPressed(String id) {
+    print('Notification button pressed: $id');
+  }
+
+  @override
+  void onNotificationPressed() {
+    print('Notification pressed');
+  }
 }

@@ -311,7 +311,6 @@ class SyncEngine extends ChangeNotifier {
     String? focusFolderId,
     int? forcedChatId,
     bool silent = false,
-    bool ignoreThreats = false,
   }) async {
     if (_isSyncing) return;
     _isSyncing = true;
@@ -325,8 +324,8 @@ class SyncEngine extends ChangeNotifier {
 
       final chatId = forcedChatId ?? await _anchor.findNebulaChannel();
       if (chatId == null) {
-        _log('[SYNC] Warning: Vault channel not found. This is normal on fresh Linux installs. Skipping pull.');
-        return;
+        _log('[SYNC] ERROR: Vault channel not found. Mandatory sync failure.');
+        throw Exception('Chat not found');
       }
 
       final snapshotMessage = await _findLatestSnapshot(chatId);
@@ -522,17 +521,14 @@ class SyncEngine extends ChangeNotifier {
       if (errorStr.contains('decryption failed') ||
           errorStr.contains('tag verification') ||
           errorStr.contains('invalid vmk') ||
-          errorStr.contains('vfs decryption')) {
-        _log('[THREAT] Sync decryption failure detected.');
-        if (!ignoreThreats) {
-          _log('[THREAT] Forcing session invalidation.');
-          SecurityManager().clearKeys();
-          onSyncThreat?.call(
-            'Session invalidated due to sync mismatch. Please re-enter your password.',
-          );
-        } else {
-          _log('[THREAT] Threat suppressed (Discovery/Fresh Install).');
-        }
+          errorStr.contains('vfs decryption') ||
+          errorStr.contains('chat not found')) {
+        _log('[THREAT] Sync integrity failure detected: $e');
+        _log('[THREAT] Forcing session invalidation.');
+        SecurityManager().clearKeys();
+        onSyncThreat?.call(
+          'Security Handshake Failed: The cloud vault is inaccessible or corrupted. Please verify your credentials.',
+        );
       }
       rethrow;
     } finally {
