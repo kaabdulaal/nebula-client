@@ -5,6 +5,23 @@
 
 Nebula is a decentralized, end-to-end encrypted (E2EE) cloud storage solution that leverages Telegram as a secure infrastructure. It transforms your Telegram account into a private, zero-knowledge vault for files and media.
 
+<<<<<<< HEAD
+=======
+## ⚠️ WARNING: EARLY BETA SOFTWARE ⚠️
+
+- **This application is currently in a Closed Beta testing phase.** > Do NOT use Nebula as the sole storage for important data. Bugs, sync conflicts, or architectural changes may result in permanent data loss. Use it at your own risk for testing and evaluation purposes only.
+
+- **If you just want to test Nebula without building it from source**:
+
+- **Download the latest installer**: Go to the [Releases page](https://github.com/kaabdulaal/nebula-client/releases).
+
+    - **Windows**: Download nebula-windows-v0.1.0-alpha.exe and run the installer.
+  
+    - **Android**: Download the nebula-android-v0.1.0-alpha.apk directly to your device and install it.
+
+    - **Linux**: Download the nebula-linux-v0.1.0-alpha.tar.gz, extract it, and run the nebula_client binary.
+      
+>>>>>>> origin/main
 ## Key Features
 
 - **Zero-Knowledge Architecture**: Encryption happens exclusively on your device. Only you hold the keys to your data.
@@ -40,6 +57,24 @@ Nebula is a decentralized, end-to-end encrypted (E2EE) cloud storage solution th
    flutter run
    ```
 
+<<<<<<< HEAD
+=======
+### 🪟 Windows
+
+- **Building on Windows requires specific C++ environments and DLL management to avoid memory heap collisions.**
+
+    <ol type="1">
+      <li>Install Visual Studio 2022 with the "Desktop development with C++" workload.</li>
+      <li>Build the project in release mode:
+        <pre><code>flutter build windows --release</code></pre>
+      </li>
+    </ol>
+
+- **CRITICAL**: Ensure the required native libraries (jsoncpp.dll, libcrypto-1_1-x64.dll, libssl-1_1-x64.dll, and TDLib dependencies) are placed directly in the build\windows\x64\runner\Release\ directory alongside nebula_client.exe.
+
+- **Note**: Always run the Windows client in --release mode (flutter run -d windows --release) to prevent MSVC CRT (Debug/Release) mismatch crashes when parsing JSON.
+
+>>>>>>> origin/main
 ## Architecture Overview
 
 - **State Management**: Uses **Riverpod** for predictable, reactive state handling and dependency injection.

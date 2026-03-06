@@ -209,7 +209,7 @@ class _CloudUnlockScreenState extends ConsumerState<CloudUnlockScreen> {
                   children: [
                     TextButton(
                       onPressed: () {
-                        ref.read(authProvider.notifier).forceRestoreState();
+                        context.go('/restore-wallet');
                       },
                       child: Text(
                         'Forgot Password?',

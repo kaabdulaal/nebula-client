@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nebula_client/core/api/nebula_api.dart';
@@ -39,14 +38,14 @@ class FakeApi extends Fake implements NebulaApi {
   }
 
   @override
-  int deleteItem(String id, {int timestamp = 0}) {
+  int deleteItem(String id, {int? timestamp}) {
     deletedIds.add(id);
-    tombstones[id] = timestamp;
+    tombstones[id] = timestamp ?? 0;
     return 0;
   }
 
   @override
-  int upsertFile(String id, String? folderId, String name, int size, int manifestMsgId, String? mimeType) {
+  int upsertFile(String id, String? folderId, String name, int size, int manifestMsgId, String? mimeType, {int? timestamp}) {
     upsertedIds.add(id);
     return 0;
   }
@@ -93,9 +92,7 @@ void main() {
     test('Newer Edit beats Older Delete', () {
       fakeApi.tombstones['item_1'] = 100;
 
-      const meta = '#NEBULA_MANIFEST|file.txt|item_1|root|1024|555|file|text/plain|2026-01-01';
-      syncEngine.initializeRealTimeListener(); 
-      
+      syncEngine.initializeRealTimeListener();
       
       
     });

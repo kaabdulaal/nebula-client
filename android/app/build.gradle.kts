@@ -1,5 +1,12 @@
 plugins {
     id("com.android.application")
+<<<<<<< HEAD
+=======
+    // START: FlutterFire Configuration
+    id("com.google.gms.google-services")
+    // END: FlutterFire Configuration
+    id("com.google.firebase.crashlytics")
+>>>>>>> origin/main
     id("kotlin-android")
     id("dev.flutter.flutter-gradle-plugin")
 }
@@ -39,10 +46,33 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("debug")
+<<<<<<< HEAD
             // Ensure symbols are not stripped for debugging if needed, though 'release' usually strips.
             // ndk {
             //     debugSymbolLevel = "FULL"
             // }
+=======
+
+            // R8 / ProGuard:
+            // MUST have proguard-rules.pro to protect JNI bridge symbols
+            // (nebula_core.so, libtdjson.so) from being stripped or renamed.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+
+            // ── Firebase Crashlytics (Native C++ Symbols) ────────────────────
+            configure<com.google.firebase.crashlytics.buildtools.gradle.CrashlyticsExtension> {
+                nativeSymbolUploadEnabled = true
+                unstrippedNativeLibsDir = "build/intermediates/merged_native_libs/release/out/lib"
+            }
+        }
+        debug {
+            isMinifyEnabled = false
+            isShrinkResources = false
+>>>>>>> origin/main
         }
     }
 

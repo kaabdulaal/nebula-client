@@ -86,3 +86,8 @@ analyze_results*.txt
 *.enc
 *.log
 temp_*
+<<<<<<< HEAD
+=======
+lib/firebase_options.dart
+android/app/google-services.json
+>>>>>>> origin/main

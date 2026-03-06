@@ -23,7 +23,7 @@ Future<Directory> getNebulaDocumentsDirectory() async {
       return await getApplicationDocumentsDirectory();
     } catch (e) {
       final home = Platform.environment['HOME'] ?? '.';
-      final nebulaDir = Directory(p.join(home, '.local', 'share', 'nebula'));
+      final nebulaDir = Directory(p.join(home, '.nebula_data'));
 
       if (!await nebulaDir.exists()) {
         await nebulaDir.create(recursive: true);

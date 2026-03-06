@@ -147,7 +147,7 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
                 IconButton(
                   icon: const Icon(Icons.drive_file_move, color: Colors.blueAccent, size: 28),
                   tooltip: 'Move to folder',
-                  onPressed: () => _handleMove(context, ref),
+                  onPressed: () => _handleMove(context),
                 ),
                 IconButton(
                   icon: const Icon(Icons.delete_forever, color: Colors.red, size: 28),
@@ -257,7 +257,7 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
                           if (!isFolder)
                             IconButton(
                               icon: const Icon(Icons.download, color: Colors.white38, size: 20),
-                              onPressed: () => _handleDownload(context, ref, node),
+                              onPressed: () => _handleDownload(context, node),
                             ),
                           IconButton(
                             icon: const Icon(Icons.delete_outline, color: Colors.white24, size: 20),
@@ -314,7 +314,7 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
               title: const Text('Upload File', style: TextStyle(color: Colors.white)),
               onTap: () {
                 Navigator.pop(context);
-                _handleUpload(context, ref);
+                _handleUpload(context);
               },
             ),
             const SizedBox(height: 8),
@@ -324,30 +324,34 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
     );
   }
 
-  Future<void> _handleDownload(BuildContext context, WidgetRef ref, FileNode node) async {
+  Future<void> _handleDownload(BuildContext context, FileNode node) async {
     final orchestrator = DownloadOrchestrator();
-    final messenger = ScaffoldMessenger.of(context);
+    final messenger = ScaffoldMessenger.of(context); 
     
     try {
       await orchestrator.startDownload(
         node,
         onProgress: (p) {
+          if (!mounted) return;
           ref.read(transferServiceProvider.notifier).updateDownload(node.id, node.name, p);
         },
       );
-      if (context.mounted) {
-        messenger.showSnackBar(
-          SnackBar(content: Text('Downloaded ${node.name}')),
-        );
-      }
+      
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('Downloaded ${node.name}')),
+      );
     } catch (e) {
-      if (e.toString() != 'Exception: USER_CANCELLED' && context.mounted) {
+      if (!mounted) return;
+      if (e.toString() != 'Exception: USER_CANCELLED') {
         messenger.showSnackBar(
           SnackBar(content: Text('Download failed: $e')),
         );
       }
     } finally {
-      ref.read(transferServiceProvider.notifier).updateDownload(node.id, node.name, 1.0);
+      if (mounted) {
+        ref.read(transferServiceProvider.notifier).updateDownload(node.id, node.name, 1.0);
+      }
     }
   }
 
@@ -366,9 +370,11 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () {
+              final messenger = ScaffoldMessenger.of(context); 
               ref.read(explorerProvider.notifier).deleteItem(node.id);
               Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
+              if (!mounted) return;
+              messenger.showSnackBar(
                 SnackBar(content: Text('${node.name} deleted')),
               );
             },
@@ -379,26 +385,30 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
     );
   }
 
-  Future<void> _handleUpload(BuildContext context, WidgetRef ref) async {
+  Future<void> _handleUpload(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context); 
     try {
       final notifier = ref.read(explorerProvider.notifier);
       final result = await FilePicker.platform.pickFiles();
       if (result != null && result.files.single.path != null) {
         final file = File(result.files.single.path!);
+        
+        if (!mounted) return;
+        
         await ref.read(activeUploadsProvider.notifier).startUpload(
               sourceFile: file,
               parentId: notifier.currentFolderId,
             );
         
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+        if (mounted) {
+          messenger.showSnackBar(
             const SnackBar(content: Text('Upload started...')),
           );
         }
       }
     } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+      if (mounted) {
+        messenger.showSnackBar(
           SnackBar(content: Text('Upload failed: $e')),
         );
       }
@@ -456,10 +466,12 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () {
+              final messenger = ScaffoldMessenger.of(context); 
               final count = ref.read(explorerProvider.notifier).selectedIds.length;
               ref.read(explorerProvider.notifier).deleteSelected();
               Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
+              if (!mounted) return;
+              messenger.showSnackBar(
                 SnackBar(content: Text('$count items deleted')),
               );
             },
@@ -470,7 +482,8 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
     );
   }
 
-  Future<void> _handleMove(BuildContext context, WidgetRef ref) async {
+  Future<void> _handleMove(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context); 
     final selectedIds = ref.read(explorerProvider).selectedIds;
     if (selectedIds.isEmpty) return;
 
@@ -479,20 +492,20 @@ class _ExplorerScreenState extends ConsumerState<ExplorerScreen> {
       excludeIds: selectedIds,
     );
 
-    if (targetFolderId == null || !context.mounted) return;
+    if (targetFolderId == null || !mounted) return;
 
     final result = await ref.read(explorerProvider.notifier).moveSelected(targetFolderId);
-    if (!context.mounted) return;
+    if (!mounted) return;
 
     if (result == -2) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         const SnackBar(
           content: Text('Cannot move a folder into itself or its subfolder.'),
           backgroundColor: Colors.red,
         ),
       );
     } else if (result > 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         SnackBar(content: Text('$result item(s) moved successfully.')),
       );
     }

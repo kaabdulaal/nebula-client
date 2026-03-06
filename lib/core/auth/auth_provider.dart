@@ -48,7 +48,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
   bool _isAnchoring = false;
   bool _isRestoring = false;
   bool _isCloudChecking = false; 
+  bool _isDestroying = false;
   bool _discoveryPending = false; 
+  DateTime? _lastDiscoveryTimestamp;
   
   Uint8List? _tempMnemonic;
   String? _tempUnlockPassword; 
@@ -79,6 +81,19 @@ class AuthNotifier extends StateNotifier<AuthState> {
   Future<void> _init() async {
     state = const AuthState.initializing().copyWith(status: AuthStateStatus.loading);
 
+    final healthy = await SecretStore.isKeyringHealthy();
+    SecurityManager().setKeyringHealth(healthy);
+    if (!healthy) {
+      print('[Auth] CRITICAL: System Keyring is UNHEALTHY. Forcing stricter cloud validation.');
+    }
+
+    SyncEngine().onSyncThreat = (reason) {
+      print('[Auth] SYNC THREAT DETECTED: $reason');
+      lockVault();
+      if (mounted) {
+        state = state.copyWith(status: AuthStateStatus.locked, errorMessage: reason);
+      }
+    };
     final docsDir = await getNebulaDocumentsDirectory();
     final dbFile = File(p.join(docsDir.path, 'nebula.db'));
 
@@ -90,6 +105,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = state.copyWith(status: AuthStateStatus.loading);
 
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final hasSeenOnboarding = prefs.getBool('has_seen_onboarding') ?? false;
+      if (!hasSeenOnboarding) {
+        print('[Auth] First launch detected (has_seen_onboarding=false). Forcing INITIAL state.');
+        if (mounted) {
+          state = const AuthState.initial();
+        }
+        return;
+      }
       var creds = await _credsRepository.getCredentials();
       if (creds == null) {
         await _credsRepository.syncCredentials();
@@ -107,9 +131,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
           return;
         }
 
+        print('[Auth] No credentials found and no local DB. Yielding error or initial.');
         if (mounted) {
-          state = const AuthState.error(
-              'Network connection error. Please check your internet and try again.');
+          state = const AuthState.initial();
         }
         return;
       }
@@ -126,7 +150,31 @@ class AuthNotifier extends StateNotifier<AuthState> {
   Future<void> _startTDLib(TelegramCredentials creds, String docsDirPath) async {
     final dbPath = p.join(docsDirPath, 'nebula_tdlib');
 
-    await _repository.initTelegram(creds.apiId, creds.apiHash, dbPath);
+    // Native Resource Guard: Ensure TDLib directory is not locked by a previous process.
+    final tdlibDir = Directory(dbPath);
+    if (tdlibDir.existsSync()) {
+      final lockFile = File(p.join(dbPath, 'td.binlog.lock'));
+      if (lockFile.existsSync()) {
+        print('[Auth] WARNING: TDLib lock file detected. Waiting for release...');
+        for (int i = 0; i < 5; i++) {
+          await Future.delayed(const Duration(milliseconds: 500));
+          if (!lockFile.existsSync()) {
+            print('[Auth] TDLib lock released after ${(i + 1) * 500}ms.');
+            break;
+          }
+          if (i == 4) {
+            print('[Auth] TDLib lock persisted after 2.5s. Forcing removal.');
+            try { lockFile.deleteSync(); } catch (_) {}
+          }
+        }
+      }
+    }
+
+    try {
+      await _repository.initTelegram(creds.apiId, creds.apiHash, dbPath);
+    } catch (e) {
+      throw Exception('FFI initTelegram Native Crash: $e');
+    }
 
     await _updateSubscription?.cancel();
     _updateSubscription = _repository.updates.listen((update) {
@@ -180,8 +228,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
       case 'authorizationStateReady':
         return AuthStateStatus.ready;
       case 'authorizationStateLoggingOut':
-      case 'authorizationStateClosed':
         return AuthStateStatus.initial;
+      case 'authorizationStateClosed':
+        return AuthStateStatus.error;
       default:
         return state.status;
     }
@@ -189,19 +238,25 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   Future<void> _handleAuthState(Map<String, dynamic> stateJson) async {
     if (!mounted) return;
-
-    if (state.status == AuthStateStatus.locked && stateJson['@type'] != 'authorizationStateReady') {
-      print(
-          '[Auth] System LOCKED. Ignoring background update: ${stateJson['@type']}');
-      return;
-    }
-
-    if (state.status == AuthStateStatus.ready && stateJson['@type'] == 'authorizationStateReady') {
+    if (_isDestroying) {
+      debugPrint('[Auth] IGNORED: _handleAuthState called during destroyAccount. Dropping event.');
       return;
     }
 
     final type = stateJson['@type'] as String?;
 
+    if (state.status == AuthStateStatus.locked && 
+        type != 'authorizationStateReady' && 
+        type != 'authorizationStateLoggingOut' && 
+        type != 'authorizationStateClosed') {
+      print(
+          '[Auth] System LOCKED. Ignoring background update: $type');
+      return;
+    }
+
+    if (state.status == AuthStateStatus.ready && type == 'authorizationStateReady') {
+      return;
+    }
     switch (type) {
       case 'authorizationStateWaitTdlibParameters':
         break;
@@ -270,7 +325,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         final prefs = await SharedPreferences.getInstance();
 
         if (dbFile.existsSync() || prefs.getInt('vault_channel_id') != null) {
-          print('[Auth] Zero Wait Boot: Local DB or Cache exists. Yielding Lock Screen instantly.');
+          print('[Auth] Local DB or Cache exists. Yielding Lock Screen instantly.');
           
           final isCoreOpen = NebulaApi.instance.isInitialized;
           
@@ -296,7 +351,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
           break;
         }
 
-        print('[Auth] No nebula.db found. Checking cloud for existing vault...');
+        if (Platform.isLinux) {
+          print('[Auth] Cold Boot Guard: Waiting 2.5s for Linux TDLib stability...');
+          await Future.delayed(const Duration(milliseconds: 2500));
+        }
+
+        print('[Auth] No nebula.db found. Scanning cloud for existing vault...');
         state = state.copyWith(status: AuthStateStatus.loading);
 
         try {
@@ -304,25 +364,27 @@ class AuthNotifier extends StateNotifier<AuthState> {
           if (!mounted) return;
 
           if (vaultExists) {
-            print('[Auth] Cloud vault detected (or manual ChatID set). Setting needsRestore.');
+            print('[Auth] Cloud vault detected. Setting needsRestore.');
+            _lastDiscoveryTimestamp = DateTime.now();
             state = AuthState.needsRestore(
               sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-            ).copyWith(hasCloudMetadata: vaultExists);
+            ).copyWith(hasCloudMetadata: true);
           } else {
-            print('[Auth] No cloud vault found. Falling back to Restore Screen (Manual Bridge).');
-            state = AuthState.needsRestore(
+            print('[Auth] No cloud vault found. Falling back to Setup or Manual Restore.');
+            _lastDiscoveryTimestamp = DateTime.now();
+            state = AuthState.needsVaultSetup(
               sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-            ).copyWith(isDiscoveryFallback: true);
+            );
           }
         } catch (e) {
-          if (!mounted) return;
-          print('[Auth] Cloud vault detection failed: $e. Falling back to Restore Screen (Manual Bridge).');
-          state = AuthState.needsRestore(
-            sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-          ).copyWith(isDiscoveryFallback: true);
-        }
-      } catch (e) {
-        print('[Auth] UNHANDLED ERROR in authorizationStateReady handler: $e');
+           if (!mounted) return;
+           print('[Auth] Cloud discovery failed: $e. Falling back to Setup.');
+           state = AuthState.needsVaultSetup(
+             sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
+           );
+         }
+       } catch (e) {
+         print('[Auth] UNHANDLED ERROR in authorizationStateReady handler: $e');
         if (mounted) {
           state = AuthState.locked(
             sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
@@ -336,8 +398,18 @@ class AuthNotifier extends StateNotifier<AuthState> {
       case 'authorizationStateLoggingOut':
       case 'authorizationStateClosed':
         print('[Auth] Session closed (@type: $type).');
-        if (state.status != AuthStateStatus.initial &&
-            state.status != AuthStateStatus.loading) {
+        if (state.status == AuthStateStatus.loading || 
+            state.status == AuthStateStatus.initializing ||
+            state.status == AuthStateStatus.needsVaultSetup ||
+            state.status == AuthStateStatus.needsRestore) {
+          state = state.copyWith(
+            status: AuthStateStatus.error,
+            errorMessage: 'Native Session Failure: The underlying TDLib process died unexpectedly during startup or keyring access failed.',
+          );
+          break;
+        }
+
+        if (state.status != AuthStateStatus.initial && state.status != AuthStateStatus.error) {
           state = AuthState.initial(
             sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
           );
@@ -471,10 +543,14 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
 
     if (mnemonic == null) {
-       final storedMnemonic = await SecretStore.readMnemonic();
-       if (storedMnemonic != null) {
-          print('[Auth] anchorVault(): recovered mnemonic from SecretStore.');
-          mnemonic = CryptoUtils.mnemonicToBytes(storedMnemonic);
+       try {
+         final storedMnemonic = await SecretStore.readMnemonic();
+         if (storedMnemonic != null) {
+            print('[Auth] anchorVault(): recovered mnemonic from SecretStore.');
+            mnemonic = CryptoUtils.mnemonicToBytes(storedMnemonic);
+         }
+       } catch (e) {
+         print('[Auth] Safe Mode: SecretStore.readMnemonic() failed in anchorVault: $e');
        }
     }
 
@@ -497,7 +573,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
         print('[Auth] Vault Created Locally. Now storing Cloud Metadata...');
         state = state.copyWith(masterKey: 'VAULT_CREATED');
 
-        await SecretStore.saveVaultPassword(password);
+        if (SecurityManager().isKeyringHealthy) {
+          await SecretStore.saveVaultPassword(password);
+        } else {
+          print('[Auth] Safe Mode: Bypassing SecretStore vault password save.');
+        }
 
         if (_repository.currentAuthState?['@type'] == 'authorizationStateReady') {
           final anchorService = VaultAnchorService();
@@ -549,7 +629,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
             }
           }
         }
-        await SecretStore.saveMnemonic(mnemonicStr);
+        if (SecurityManager().isKeyringHealthy) {
+          await SecretStore.saveMnemonic(mnemonicStr);
+        } else {
+          print('[Auth] Safe Mode: Bypassing SecretStore mnemonic save.');
+        }
         final vmk = NebulaApi.instance.deriveMasterKeyBytes(mnemonicStr);
         SecurityManager().setMasterKey(vmk);
         debugPrint('[Auth] VMK pushed to SecurityManager (Anchor Path)');
@@ -636,7 +720,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
           iterations: 100000, 
         );
         SyncEngine().setMasterKey(sessionKey);
-        await SecretStore.saveMnemonic(mnemonicStr);
+        if (SecurityManager().isKeyringHealthy) {
+          await SecretStore.saveMnemonic(mnemonicStr);
+        } else {
+          print('[Auth] Safe Mode: Bypassing SecretStore mnemonic save during restore.');
+        }
         NebulaApi.instance.setSetting('vault_mnemonic_salt', cleanSalt);
         NebulaApi.instance.setSetting('vault_mnemonic_iv', cleanIv);
         NebulaApi.instance.setSetting('vault_mnemonic_enc', cleanEnc);
@@ -660,7 +748,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
           sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
         );
         
-        await SecretStore.saveVaultPassword(password);
+        if (SecurityManager().isKeyringHealthy) {
+          await SecretStore.saveVaultPassword(password);
+        } else {
+          print('[Auth] Safe Mode: Bypassing SecretStore vault password save during restore.');
+        }
         
         print('[Auth] STATE SET TO READY. Triggering initial VFS pull...');
         SyncEngine().pull();
@@ -756,19 +848,30 @@ class AuthNotifier extends StateNotifier<AuthState> {
     int result = await NebulaApi.instance.unlockWithPassword(password);
 
     if (result == 0) {
-      print('[Auth] Local unlock successful. Executing Optimistic UI Fire-and-Forget.');
-      
-      await SecretStore.saveVaultPassword(password);
-      
+      if (SecurityManager().isKeyringHealthy) {
+        try {
+          await SecretStore.saveVaultPassword(password);
+        } catch (e) {
+          print('[Auth] Warning: Keyring save failed (Linux/Libsecret error?). Proceeding with memory-only session.');
+          debugPrint('[Auth] System Keyring Deadlock detected. Security downgraded to DB-only session.');
+        }
+      } else {
+        print('[Auth] Safe Mode: Bypassing Keyring save on Unlock.');
+      }
+
       final sessionKey = await CryptoUtils.pbkdf2Async(
         password: password,
         salt: Uint8List.fromList(utf8.encode('NEBULA_SESSION_SALT')),
         iterations: 100000,
       );
       SyncEngine().setMasterKey(sessionKey);
-      
-      String? mnemonicStr = await SecretStore.readMnemonic();
-      
+
+      String? mnemonicStr;
+      try {
+        mnemonicStr = await SecretStore.readMnemonic();
+      } catch (e) {
+        print('[Auth] Safe Mode: SecretStore.readMnemonic() failed in unlockVault: $e');
+      }
       if (mnemonicStr == null) {
         debugPrint('[Auth] Secure mnemonic missing. Layer 2: Attempting DB-Encrypted fallback...');
         try {
@@ -787,7 +890,13 @@ class AuthNotifier extends StateNotifier<AuthState> {
             if (decBytes != null) {
               mnemonicStr = CryptoUtils.bytesToMnemonic(decBytes);
               debugPrint('[Auth] Mnemonic recovered from encrypted DB. Re-seeding SecureStore.');
-              await SecretStore.saveMnemonic(mnemonicStr);
+              if (SecurityManager().isKeyringHealthy) {
+                try {
+                  await SecretStore.saveMnemonic(mnemonicStr);
+                } catch (e) {
+                  debugPrint('[Auth] Safe Mode: SecretStore re-seed failed: $e');
+                }
+              }
             }
           }
         } catch (e) {
@@ -801,13 +910,17 @@ class AuthNotifier extends StateNotifier<AuthState> {
         debugPrint('[Auth] VMK pushed to SecurityManager');
         SyncEngine().initializeRealTimeListener();
 
+        print('[Auth] UNLOCK SUCCESS. Entering ready state.');
         state = state.copyWith(
           status: AuthStateStatus.ready, 
-          masterKey: 'LOCAL_UNLOCKED',
+          masterKey: 'LOCAL_AUTHENTICATED',
           tempPassword: password, 
           clearError: true,
           sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
         );
+
+        unawaited(_performBackgroundSecurityHandshake(password));
+        SyncEngine().pull(silent: true);
       } else {
         debugPrint('[SECURITY] Unlock succeeded but mnemonic decryption failed. Likely Wrong Password.');
         state = state.copyWith(
@@ -817,108 +930,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
         NebulaApi.instance.cleanup(); 
         return;
       }
-      
-      Future(() async {
-        if (_repository.currentAuthState == null) {
-           final creds = await _credsRepository.getCredentials();
-           if (creds != null) {
-              print('[Auth] DB Unlocked offline. Pulling credentials to start TDLib...');
-              final docsDir = await getNebulaDocumentsDirectory();
-              await _startTDLib(creds, docsDir.path);
-           }
-        }
-        
-        final testQuery = NebulaApi.instance.getSetting('vault_init_sentinel');
-        if (testQuery == null) {
-           final writeRc = NebulaApi.instance.setSetting('vault_init_sentinel', '1');
-           if (writeRc != 0) {
-              print('[Auth] CRITICAL: DB Write FAILED ($writeRc). Vault is genuinely corrupted.');
-           }
-        }
-
-        if (_repository.currentAuthState?['@type'] == 'authorizationStateReady') {
-           _initVaultAnchoring(manualMnemonic: mnemonicStr);
-        }
-        
-        print('[Auth] Triggering Sync Engine Pull asynchronously...');
-        SyncEngine().pull(silent: true, ignoreThreats: true);
-
-        final parityAnchorService = VaultAnchorService();
-        final parityChannelId = await parityAnchorService.findNebulaChannel();
-        if (parityChannelId != null) {
-          final metadata = await parityAnchorService.getCloudMetadata(parityChannelId);
-          if (metadata != null) {
-            try {
-              final cleanSalt = metadata['Salt']!.split('\n').first.split('#').first.trim();
-              final cleanIv = metadata['IV']!.split('\n').first.split('#').first.trim();
-              final cleanEnc = metadata['EncMnemonic']!.split('\n').first.split('#').first.trim();
-              
-              final salt = Uint8List.fromList(hex.decode(cleanSalt));
-              final iv = Uint8List.fromList(hex.decode(cleanIv));
-              final encMnemonic = Uint8List.fromList(hex.decode(cleanEnc));
-              
-              final key = await CryptoUtils.pbkdf2Async(password: password, salt: salt, iterations: 600000);
-              final dec = CryptoUtils.aesGcmDecrypt(encMnemonic, key, iv);
-              
-              if (dec == null) {
-                print('[Auth] SHIELD 2: Local opened, but Cloud rejected it. Password changed remotely!');
-                NebulaApi.instance.cleanup();
-                state = state.copyWith(status: AuthStateStatus.locked, errorMessage: 'Password changed remotely. Enter new password.');
-              }
-            } catch (e) {
-              print('[Auth] Background Cloud Parity Check ERROR: $e');
-            }
-          }
-        }
-      });
-      return;
-      
     } else {
-      print('[Auth] Local Vault Unlock FAILED (code: $result). Yielding to UI instantly.');
+      print('[Auth] Local Vault Unlock FAILED (code: $result). Assume Invalid Password.');
       state = state.copyWith(status: AuthStateStatus.locked, errorMessage: 'Invalid vault password.');
-      
-      Future(() async {
-        print('[Auth] Running Background Fast Cloud Verification for Failure Case...');
-        final anchorService = VaultAnchorService();
-        final channelId = await anchorService.findNebulaChannel();
-        
-        if (channelId != null) {
-          final metadata = await anchorService.getCloudMetadata(channelId);
-          if (metadata != null) {
-            try {
-              final cleanSalt = metadata['Salt']!.split('\n').first.split('#').first.trim();
-              final cleanIv = metadata['IV']!.split('\n').first.split('#').first.trim();
-              final cleanEnc = metadata['EncMnemonic']!.split('\n').first.split('#').first.trim();
-              
-              final salt = Uint8List.fromList(hex.decode(cleanSalt));
-              final iv = Uint8List.fromList(hex.decode(cleanIv));
-              final encMnemonic = Uint8List.fromList(hex.decode(cleanEnc));
-              
-              final key = await CryptoUtils.pbkdf2Async(password: password, salt: salt, iterations: 600000);
-              final dec = CryptoUtils.aesGcmDecrypt(encMnemonic, key, iv);
-              
-              if (dec != null) {
-                print('[Auth] SHIELD 1: Remote password change detected! Transitioning to Restore screen.');
-                NebulaApi.instance.cleanup();
-                state = state.copyWith(
-                  status: AuthStateStatus.needsRestore, 
-                  errorMessage: 'Cloud password changed. Please restore your vault.'
-                );
-              } else {
-                 print('[Auth] Shield 1 background check confirms bad password.');
-              }
-            } catch (e) {
-              print('[Auth] Background Cloud decryption failed: $e');
-            }
-          }
-        } else if (result == 26) {
-           print('[Auth] UNRECOVERABLE: Local DB is NOTADB and Cloud is Empty.');
-           state = state.copyWith(
-             status: AuthStateStatus.vaultCorrupted, 
-             errorMessage: 'Local vault is corrupted and no cloud backup found. Please reset.'
-           );
-        }
-      });
     }
   }
 
@@ -993,8 +1007,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
           sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
         );
         
-        await SecretStore.saveVaultPassword(password);
-        await SecretStore.saveMnemonic(mnemonic);
+        if (SecurityManager().isKeyringHealthy) {
+          await SecretStore.saveVaultPassword(password);
+          await SecretStore.saveMnemonic(mnemonic);
+        } else {
+          print('[Auth] Safe Mode: Bypassing Keyring writes during Manual Recovery.');
+        }
         
         try {
           final salt = CryptoUtils.generateRandomBytes(32);
@@ -1047,15 +1065,114 @@ class AuthNotifier extends StateNotifier<AuthState> {
     debugPrint('[Auth] Vault locked. DB and Telegram session preserved.');
   }
 
+  /// Vault-only nuclear wipe: destroys the cloud channel and local VFS
+  /// but PRESERVES the Telegram session. No re-login required.
+  Future<void> nukeVaultAndStartOver() async {
+    debugPrint('[Auth] nukeVaultAndStartOver: Destroying vault (preserving TDLib session)...');
+
+    if (mounted) {
+      state = state.copyWith(status: AuthStateStatus.loading, clearError: true);
+    }
+
+    try {
+      // 1. Cloud Wipe — find and delete the Telegram channel
+      final anchorService = VaultAnchorService();
+      final channelId = await anchorService.findNebulaChannel();
+
+      if (channelId != null) {
+        debugPrint('[Auth] NUKE: Deleting cloud channel (chatId: $channelId)...');
+        try {
+          _repository.send({
+            '@type': 'deleteChat',
+            'chat_id': channelId,
+          });
+          // Give TDLib a moment to process the deletion
+          await Future.delayed(const Duration(milliseconds: 1000));
+          debugPrint('[Auth] NUKE: Cloud channel deleted.');
+        } catch (e) {
+          debugPrint('[Auth] NUKE: Cloud channel deletion failed (non-fatal): $e');
+        }
+      } else {
+        debugPrint('[Auth] NUKE: No cloud channel found. Skipping cloud wipe.');
+      }
+
+      // 2. Local VFS Wipe — close DB, delete files, clear caches
+      await _wipeVault(preserveChannel: false);
+
+      // 3. Halt and completely clear SyncEngine RAM caches
+      SyncEngine().reset();
+
+      // 4. Transition to vault setup — TDLib stays authenticated
+      if (mounted) {
+        state = AuthState.needsVaultSetup(
+          sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
+        );
+      }
+      debugPrint('[Auth] nukeVaultAndStartOver COMPLETE. Ready for new vault creation.');
+    } catch (e) {
+      debugPrint('[Auth] nukeVaultAndStartOver ERROR: $e');
+      if (mounted) {
+        state = state.copyWith(
+          status: AuthStateStatus.error,
+          errorMessage: 'Vault reset failed: $e',
+        );
+      }
+    }
+  }
+
   Future<void> destroyAccount() async {
     debugPrint('[Auth] Destroying account (full wipe)...');
+    _isDestroying = true;
+
+    // Safe Guard: Prevent auto-wipe if called within 2s of a successful cloud discovery.
+    if (_lastDiscoveryTimestamp != null) {
+      final elapsed = DateTime.now().difference(_lastDiscoveryTimestamp!);
+      if (elapsed.inSeconds < 2) {
+        debugPrint('[Auth] WARNING: destroyAccount() called ${elapsed.inMilliseconds}ms after cloud discovery. Ignoring spurious wipe to prevent data loss.');
+        _isDestroying = false;
+        return;
+      }
+    }
+
     try {
+      _updateSubscription?.cancel();
+      _updateSubscription = null;
+      
+      final completer = Completer<void>();
+      final tempSub = _repository.updates.listen((update) {
+        if (update['@type'] == 'updateAuthorizationState' &&
+            update['authorization_state']['@type'] == 'authorizationStateClosed') {
+          if (!completer.isCompleted) completer.complete();
+        }
+      });
+
       _repository.logOut();
+      
+      try {
+        await completer.future.timeout(const Duration(seconds: 5));
+        debugPrint('[Auth] TDLib confirmed closed.');
+      } catch (e) {
+        debugPrint('[Auth] Note: TDLib closure confirmation timed out (5s). Proceeding anyway.');
+      } finally {
+        tempSub.cancel();
+      }
+
+      // Fully destroy the C++ FFI instance so the next init() starts clean.
+      _repository.dispose();
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      await _wipeTdlibData();
       await _wipeVault();
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('has_seen_onboarding', false);
+
+      _isDestroying = false;
       if (mounted) {
         state = const AuthState.initial();
       }
     } catch (e) {
+      _isDestroying = false;
       debugPrint('[Auth] Destroy account error: $e');
     }
   }
@@ -1086,6 +1203,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     _repository.requestQrCodeAuthentication();
   }
 
+
   void switchToPhoneNumber() {
     print('[Auth] Switching to Phone Login — stopping old session first.');
     _updateSubscription?.cancel();
@@ -1113,12 +1231,20 @@ class AuthNotifier extends StateNotifier<AuthState> {
     try {
       final docsDir = await getNebulaDocumentsDirectory();
       final dbDir = Directory(p.join(docsDir.path, 'nebula_tdlib'));
-      if (await dbDir.exists()) {
-        print('[Auth] Deleting TDLib directory: ${dbDir.path}');
-        await dbDir.delete(recursive: true);
+      for (int i = 0; i < 10; i++) {
+        try {
+          if (await dbDir.exists()) {
+            print('[Auth] Deleting TDLib directory: ${dbDir.path}');
+            await dbDir.delete(recursive: true);
+          }
+          break; // successfully unlocked and deleted
+        } catch (e) {
+          print('[Auth] TDLib cleanup failed (attempt ${i + 1}): $e');
+          await Future.delayed(const Duration(milliseconds: 500));
+        }
       }
     } catch (e) {
-      print('[Auth] Note: TDLib cleanup failed: $e');
+      print('[Auth] Note: TDLib cleanup entirely failed: $e');
     }
   }
 
@@ -1158,6 +1284,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
       final anchorService = VaultAnchorService();
       if (!preserveChannel) {
         await anchorService.clearLocalAnchor();
+        try {
+          await SecretStore.clearVaultPassword();
+          await SecretStore.clearMnemonic();
+        } catch (e) {
+          print('[Auth] Safe Mode: SecretStore clear failed during wipe: $e');
+        }
       }
       
       _tempMnemonic = null;
@@ -1221,10 +1353,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
 
   void forceRestoreState() {
+    if (state.status == AuthStateStatus.needsRestore) return;
     print('[Auth] Manual Force Sync requested. Transitioning to Restore screen.');
     state = AuthState.needsRestore(
       sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
-    );
+    ).copyWith(hasCloudMetadata: state.hasCloudMetadata);
   }
 
   void resetError() {
@@ -1260,5 +1393,113 @@ class AuthNotifier extends StateNotifier<AuthState> {
     _isAnchoring = false;
     _isRestoring = false;
     _isCloudChecking = false;
+  }
+
+  Future<void> _performBackgroundSecurityHandshake(String password) async {
+    print('[Watchdog] Starting Background Security Handshake...');
+    final anchorService = VaultAnchorService();
+    
+    final currentTgState = _repository.currentAuthState;
+    if (currentTgState == null || currentTgState['@type'] != 'authorizationStateReady') {
+       print('[Watchdog] Telegram not ready. Handshake skipped.');
+       return;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    int? channelId = prefs.getInt('vault_channel_id');
+    
+    if (channelId != null) {
+      final isHealthy = await anchorService.checkChannelExistence(channelId);
+      if (isHealthy) {
+        print('[Watchdog] Fast-track chat accessibility check passed.');
+        return;
+      }
+    }
+
+    channelId = await anchorService.findNebulaChannel();
+    if (channelId == null) {
+      print('[Watchdog] SECURITY ALERT: Cloud channel missing! Revoking session.');
+      if (mounted) {
+        lockVault();
+        state = state.copyWith(
+          status: AuthStateStatus.vaultOrphaned,
+          errorMessage: 'Cloud anchor missing. Session revoked for security.',
+        );
+      }
+      return;
+    }
+
+    final metadata = await anchorService.getCloudMetadata(channelId);
+    if (metadata != null) {
+      try {
+        final cleanSalt = metadata['Salt']!.split('\n').first.split('#').first.trim();
+        final cleanIv = metadata['IV']!.split('\n').first.split('#').first.trim();
+        final cleanEnc = metadata['EncMnemonic']!.split('\n').first.split('#').first.trim();
+        
+        final saltArr = Uint8List.fromList(hex.decode(cleanSalt));
+        final ivArr = Uint8List.fromList(hex.decode(cleanIv));
+        final encMnemonicArr = Uint8List.fromList(hex.decode(cleanEnc));
+        
+        final parityKey = await CryptoUtils.pbkdf2Async(password: password, salt: saltArr, iterations: 600000);
+        final decContent = CryptoUtils.aesGcmDecrypt(encMnemonicArr, parityKey, ivArr);
+        
+        if (decContent == null) {
+          print('[Watchdog] SECURITY ALERT: Parity Mismatch! Revoking session.');
+          if (mounted) {
+            lockVault();
+            state = state.copyWith(
+              status: AuthStateStatus.locked,
+              errorMessage: 'Cloud password mismatch. Session revoked.',
+            );
+          }
+          return;
+        }
+      } catch (e) {
+        print('[Watchdog] Verification error: $e');
+      }
+    }
+    
+    print('[Watchdog] Background Handshake success.');
+  }
+  Future<void> completeOnboarding() async {
+    print('[Auth] Onboarding complete. Attempting to start TDLib...');
+    
+    if (state.status == AuthStateStatus.loading) {
+       print('[Auth] IGNORED: completeOnboarding is already running.');
+       return;
+    }
+
+    state = state.copyWith(status: AuthStateStatus.loading);
+    
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('has_seen_onboarding', true);
+
+      var creds = await _credsRepository.getCredentials();
+      
+      if (creds == null) {
+        print('[Auth] No credentials found. Attempting to sync defaults...');
+        await _credsRepository.syncCredentials();
+        creds = await _credsRepository.getCredentials();
+      }
+
+      if (creds == null) {
+        print('[Auth] Credentials still missing after sync.');
+        state = state.copyWith(
+          status: AuthStateStatus.error,
+          errorMessage: 'API Credentials could not be loaded. Please check your internet or provide custom keys.',
+        );
+        return;
+      }
+      
+      final docsDir = await getNebulaDocumentsDirectory();
+      await _startTDLib(creds, docsDir.path);
+    } catch (e) {
+      print('[Auth] completeOnboarding failed: $e');
+      state = state.copyWith(
+        status: AuthStateStatus.error,
+        errorMessage: 'Failed to start TDLib: $e',
+      );
+    }
   }
 }

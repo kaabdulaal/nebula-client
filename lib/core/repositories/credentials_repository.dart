@@ -4,6 +4,7 @@ import 'package:nebula_core/nebula_core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/remote_config_service.dart';
 import '../security/secret_store.dart';
+import '../security/security_manager.dart';
 
 class TelegramCredentials {
   final int apiId;
@@ -80,7 +81,11 @@ class CredentialsRepository {
     if (result == 0 || result == 1) {
       final creds = await getCredentials();
       if (creds != null) {
-        await SecretStore.saveCredentials(creds.apiId, creds.apiHash);
+        if (SecurityManager().isKeyringHealthy) {
+          await SecretStore.saveCredentials(creds.apiId, creds.apiHash);
+        } else {
+          debugPrint('[Credentials] Safe Mode: Bypassing SecretStore in syncCredentials.');
+        }
       }
       return true;
     }
@@ -89,7 +94,11 @@ class CredentialsRepository {
     final creds = _decryptPayloadViaCpp(payload);
     if (creds != null) {
       _memoryCredentials = creds;
-      await SecretStore.saveCredentials(creds.apiId, creds.apiHash);
+      if (SecurityManager().isKeyringHealthy) {
+        await SecretStore.saveCredentials(creds.apiId, creds.apiHash);
+      } else {
+        debugPrint('[Credentials] Safe Mode: Bypassing SecretStore post-decryption.');
+      }
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt('cached_api_id', creds.apiId);
@@ -140,6 +149,16 @@ class CredentialsRepository {
       _ffi.setSetting('manual_api_id', apiId.toString());
       _ffi.setSetting('manual_api_hash', apiHash);
     }
+  }
+  Future<void> clearCustomCredentials() async {
+    _memoryCredentials = null;
+    _ffi.setSetting('is_custom_credentials', 'false');
+    _ffi.setSetting('manual_api_id', '');
+    _ffi.setSetting('manual_api_hash', '');
+    
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('cached_api_id');
+    await prefs.remove('cached_api_hash');
   }
   
   Future<void> persistMemoryCredentials() async {

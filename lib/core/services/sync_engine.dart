@@ -10,7 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import '../api/nebula_api.dart';
 import '../models/file_node.dart';
 import '../../features/transfers/download_orchestrator.dart';
-import 'telegram_service.dart';
+
 import 'vault_anchor_service.dart';
 import '../utils/crypto_utils.dart';
 import '../security/security_manager.dart';
@@ -105,6 +105,19 @@ class SyncEngine extends ChangeNotifier {
   void resume() {
     _log('[SYNC] Engine RESUMED');
     _isPaused = false;
+  }
+
+  /// Completely clears the SyncEngine state from RAM (used during Vault Reset).
+  void reset() {
+    pause();
+    _lastGhostPurgeTimes.clear();
+    _ghostQueue.clear();
+    _ghostTimer?.cancel();
+    _ghostTimer = null;
+    _lastSeenSnapshotMsgId = null;
+    _updateSub?.cancel();
+    _updateSub = null;
+    _log('[SYNC] RAM caches and timers completely cleared (Reset).');
   }
 
   void setMasterKey(Uint8List key) {
@@ -522,13 +535,14 @@ class SyncEngine extends ChangeNotifier {
       if (errorStr.contains('decryption failed') ||
           errorStr.contains('tag verification') ||
           errorStr.contains('invalid vmk') ||
-          errorStr.contains('vfs decryption')) {
-        _log('[THREAT] Sync decryption failure detected.');
+          errorStr.contains('vfs decryption') ||
+          errorStr.contains('chat not found')) {
+        _log('[THREAT] Sync integrity failure detected: $e');
         if (!ignoreThreats) {
           _log('[THREAT] Forcing session invalidation.');
           SecurityManager().clearKeys();
           onSyncThreat?.call(
-            'Session invalidated due to sync mismatch. Please re-enter your password.',
+            'Session invalidated due to sync mismatch or missing cloud vault. Please re-enter credentials.',
           );
         } else {
           _log('[THREAT] Threat suppressed (Discovery/Fresh Install).');

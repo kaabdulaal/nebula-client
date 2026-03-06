@@ -61,7 +61,7 @@ class TelegramService {
   String? _apiHash;
   String? _dbPath;
 
-Future<void> init({required int apiId, required String apiHash, required String dbPath}) async {
+  Future<void> init({required int apiId, required String apiHash, required String dbPath}) async {
     if (_initialized) return;
 
     // 1. ФИКС ДЛЯ WINDOWS: Нормализуем слэши в путях
@@ -756,10 +756,15 @@ Future<void> init({required int apiId, required String apiHash, required String 
   }
 
   void dispose() {
-    if (!_initialized) return;
     _log('Disposing Telegram service (Graceful Shutdown)...');
 
-    send({'@type': 'close'});
+    // Only send 'close' if Dart side is still initialized — avoids sending
+    // commands to a dead client. But ALWAYS call stopTelegram() below to
+    // guarantee the C++ worker thread is joined and the TDLib client pointer
+    // is destroyed/recreated regardless of _initialized state.
+    if (_initialized) {
+      send({'@type': 'close'});
+    }
     
     _ffi.stopTelegram();
     

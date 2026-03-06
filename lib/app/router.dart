@@ -33,7 +33,9 @@ class HomeScreen extends StatelessWidget {
 class _AuthNotifierListenable extends ChangeNotifier {
   _AuthNotifierListenable(this._ref) {
     _ref.listen(authProvider, (previous, next) {
-      if (previous?.status != next.status) {
+      if (previous?.status != next.status ||
+          previous?.sessionTimestamp != next.sessionTimestamp ||
+          previous?.hasCloudMetadata != next.hasCloudMetadata) {
         notifyListeners();
       }
     });
@@ -82,37 +84,31 @@ final routerProvider = Provider<GoRouter>((ref) {
         AuthStateStatus.waitingForPassword,
         AuthStateStatus.waitingForOtherDevice,
         AuthStateStatus.rekeyRequired,
-        AuthStateStatus.loading,
-        AuthStateStatus.error,
       ];
       if (authInputStatuses.contains(auth.status)) {
         if (location == '/auth') return null;
-        if (onboardingPaths.contains(location)) return null;
-        if (location == '/login' || location == '/restore-wallet') return null;
-        
+        debugPrint('[Router] Auth Input Required (${auth.status}). Mandatory redirect to /auth');
         return '/auth';
       }
 
       if (auth.status == AuthStateStatus.needsVaultSetup) {
-        const setupRoutes = [
-          '/master_pass',
-          '/seed_intro',
-          '/seed_verify',
-          '/seed',
-        ];
+        const setupRoutes = ['/seed_intro', '/master_pass', '/seed', '/seed_verify'];
         if (setupRoutes.contains(location)) return null;
-        return '/master_pass';
+        debugPrint('[Router] Rule 1: No Vault. Redirecting to /seed_intro');
+        return '/seed_intro';
       }
 
       if (auth.status == AuthStateStatus.needsRestore) {
-        const restoreRoutes = [
-          '/restore-wallet',  
-          '/master_pass',     
-          '/seed_intro',
-          '/seed_verify',
-        ];
-        if (restoreRoutes.contains(location)) return null;
-        return '/restore-wallet';
+        if (auth.hasCloudMetadata) {
+          const cloudRoutes = ['/cloud-unlock', '/restore-wallet'];
+          if (cloudRoutes.contains(location)) return null;
+          debugPrint('[Router] Rule 3: Cloud Vault exists. Redirecting to /cloud-unlock');
+          return '/cloud-unlock';
+        } else {
+          if (location == '/restore-wallet') return null;
+          debugPrint('[Router] Rule 4: No Cloud. Redirecting to /restore-wallet');
+          return '/restore-wallet';
+        }
       }
 
       if (auth.status == AuthStateStatus.needsCloudUnlock) {
@@ -171,18 +167,31 @@ final routerProvider = Provider<GoRouter>((ref) {
 
         return isCoreOpen ? '/home' : '/lock';
       }
+  
+      if (auth.status == AuthStateStatus.error) {
+        const errorAllowed = ['/onboarding', '/api_settings', '/cartridge_setup'];
+        if (errorAllowed.contains(location)) return null;
+        debugPrint('[Router] ERROR state detected: ${auth.errorMessage}. Redirecting to /onboarding');
+        return '/onboarding';
+      }
 
       if (auth.status == AuthStateStatus.initial) {
+        if (location == '/') {
+          debugPrint('[Router] Rule 0: Fresh Start. Forwarding from Splash to /onboarding');
+          return '/onboarding';
+        }
+
         const publicPaths = [
-          '/',
           '/welcome',
           '/onboarding',
           '/cartridge_setup',
+          '/api_settings',
+          '/api-settings',
           '/restore-wallet',
           '/auth', 
         ];
         if (publicPaths.contains(location)) return null;
-        return '/welcome';
+        return '/onboarding';
       }
 
       if (auth.status == AuthStateStatus.loading || auth.status == AuthStateStatus.initializing) {
@@ -200,6 +209,13 @@ final routerProvider = Provider<GoRouter>((ref) {
         if (location == '/') return null;
         return '/';
       }
+
+      if (auth.status == AuthStateStatus.vaultOrphaned || auth.status == AuthStateStatus.vaultCorrupted) {
+        if (location == '/restore-wallet') return null;
+        return '/restore-wallet';
+      }
+
+      return null;
 
       return null;
     },
@@ -233,10 +249,7 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => const LockScreen(),
       ),
       GoRoute(
-        path: '/setup_password',
-        builder: (context, state) => const SetupScreen(),
-      ),
-      GoRoute(
+
         path: '/seed_intro',
         builder: (context, state) => const SeedScreen(),
       ),
