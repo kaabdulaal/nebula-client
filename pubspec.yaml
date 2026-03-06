@@ -1,0 +1,43 @@
+name: nebula_client
+description: "Nebula - Secure Distributed Cloud Storage on Telegram"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.5.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.1.3
+  http: ^1.2.1
+  crypto: ^3.0.3
+  flutter_riverpod: ^2.5.1
+  riverpod_annotation: ^2.3.5
+  go_router: ^14.0.0
+  path_provider: ^2.1.1
+  path: ^1.9.0
+  window_manager: ^0.3.7
+  qr_flutter: ^4.1.0
+  shared_preferences: ^2.2.3
+  encrypt: ^5.0.3
+  nebula_core:
+    path: ../nebula_core
+  file_picker: ^10.3.10
+  file_selector: ^1.1.0
+  share_plus: ^10.1.4
+  flutter_secure_storage: ^10.0.0
+  local_auth: ^2.3.0
+  convert: ^3.1.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  riverpod_generator: ^2.6.5
+  build_runner: ^2.5.4
+  custom_lint: ^0.7.6
+  riverpod_lint: ^2.6.5
+
+flutter:
+  uses-material-design: true

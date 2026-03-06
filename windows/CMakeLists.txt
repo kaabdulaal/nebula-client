@@ -1,0 +1,71 @@
+cmake_minimum_required(VERSION 3.14)
+
+if(DEFINED ENV{VCPKG_ROOT})
+    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+endif()
+
+# Since we are building from the client, we need to point vcpkg to the core's manifest
+if(NOT DEFINED VCPKG_MANIFEST_DIR)
+    get_filename_component(NEBULA_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../nebula_core" ABSOLUTE)
+    if(EXISTS "${NEBULA_CORE_DIR}/vcpkg.json")
+        set(VCPKG_MANIFEST_DIR "${NEBULA_CORE_DIR}")
+        message(STATUS "Setting VCPKG_MANIFEST_DIR to ${VCPKG_MANIFEST_DIR}")
+    endif()
+endif()
+
+project(nebula_client LANGUAGES CXX)
+
+set(BINARY_NAME "nebula_client")
+cmake_policy(VERSION 3.14...3.25)
+
+get_property(IS_MULTICONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(IS_MULTICONFIG)
+  set(CMAKE_CONFIGURATION_TYPES "Debug;Profile;Release" CACHE STRING "" FORCE)
+else()
+  if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Flutter build mode" FORCE)
+  endif()
+endif()
+
+set(CMAKE_EXE_LINKER_FLAGS_PROFILE "${CMAKE_EXE_LINKER_FLAGS_RELEASE}")
+set(CMAKE_SHARED_LINKER_FLAGS_PROFILE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE}")
+set(CMAKE_C_FLAGS_PROFILE "${CMAKE_C_FLAGS_RELEASE}")
+set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
+
+add_definitions(-DUNICODE -D_UNICODE)
+
+function(APPLY_STANDARD_SETTINGS TARGET)
+  target_compile_features(${TARGET} PUBLIC cxx_std_17)
+  target_compile_options(${TARGET} PRIVATE /W4 /WX /wd"4100")
+  target_compile_options(${TARGET} PRIVATE /EHsc)
+  target_compile_definitions(${TARGET} PRIVATE "_HAS_EXCEPTIONS=0")
+  target_compile_definitions(${TARGET} PRIVATE "$<$<CONFIG:Debug>:_DEBUG>")
+endfunction()
+
+set(FLUTTER_MANAGED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/flutter")
+add_subdirectory(${FLUTTER_MANAGED_DIR})
+add_subdirectory("runner")
+
+include(flutter/generated_plugins.cmake)
+include_directories("${CMAKE_CURRENT_SOURCE_DIR}/../../nebula_core/include")
+
+# === CI-SAFE INSTALL ===
+set(CMAKE_VS_INCLUDE_INSTALL_TO_DEFAULT_BUILD OFF)
+set(BUILD_BUNDLE_DIR "$<TARGET_FILE_DIR:${BINARY_NAME}>")
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+  set(CMAKE_INSTALL_PREFIX "${BUILD_BUNDLE_DIR}" CACHE PATH "..." FORCE)
+endif()
+
+set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
+set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
+
+install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}" COMPONENT Runtime)
+install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
+install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+
+if(PLUGIN_BUNDLED_LIBRARIES)
+  install(FILES "${PLUGIN_BUNDLED_LIBRARIES}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+endif()
+
+install(DIRECTORY "${PROJECT_BUILD_DIR}/flutter_assets" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
+install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" CONFIGURATIONS Profile;Release COMPONENT Runtime)
