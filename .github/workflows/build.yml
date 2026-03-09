@@ -62,11 +62,14 @@ jobs:
           path: nebula_core
           ssh-key: ${{ secrets.SSH_KEY_CORE }}
 
-      # 3. Принудительно выкачиваем свежий vcpkg
-      - name: Update vcpkg Submodule Manually
+      # 3. Выкачиваем ВСЕ сабмодули ядра (ИСКЛЮЧАЕТ ОШИБКУ SQLCIPHER И TDLIB)
+      - name: Update ALL Submodules
         run: |
           cd nebula_core
-          git submodule update --init --recursive --remote vcpkg
+          # Сначала берем свежий vcpkg (как было раньше)
+          git submodule update --init --remote vcpkg
+          # Затем выкачиваем все остальные сабмодули (sqlcipher, tdlib)
+          git submodule update --init --recursive
 
       # 4. Бутстрап vcpkg
       - name: Bootstrap vcpkg
