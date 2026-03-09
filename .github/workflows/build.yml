@@ -1,6 +1,6 @@
 name: Nebula Production Build
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Запуск вручную
 
 jobs:
   build:
@@ -13,21 +13,21 @@ jobs:
           - os: ubuntu-22.04
             target: linux-android
             cmd: |
-              # 0. Flutter pub get
+              # 0. Подготовка Flutter
               cd $GITHUB_WORKSPACE/nebula_client
               flutter pub get
               
-              # 1. Сборка ядра для Linux
+              # 1. Сборка зависимостей ядра для Linux
               cd $GITHUB_WORKSPACE/nebula_core
               ./vcpkg/vcpkg install --allow-unsupported
               
-              # 2. Сборка Linux пакетов
+              # 2. Упаковка Linux (deb, appimage)
               cd $GITHUB_WORKSPACE/nebula_client
               dart pub global activate flutter_distributor
               export PATH="$PATH":"$HOME/.pub-cache/bin"
               flutter_distributor package --platform linux --targets deb,appimage
               
-              # 3. Сборка Android (APK)
+              # 3. Сборка Android
               cd $GITHUB_WORKSPACE/nebula_core
               export VCPKG_DEFAULT_TRIPLET=arm64-android
               export VCPKG_DEFAULT_HOST_TRIPLET=x64-linux
@@ -48,11 +48,13 @@ jobs:
             artifact_path: nebula_client/build/windows/x64/runner/Release/
 
     steps:
+      # 1. Клонируем Клиент
       - name: Checkout Client
         uses: actions/checkout@v4
         with:
           path: nebula_client
 
+      # 2. Клонируем Ядро (с SSH ключом)
       - name: Checkout Core
         uses: actions/checkout@v4
         with:
@@ -60,23 +62,24 @@ jobs:
           path: nebula_core
           ssh-key: ${{ secrets.SSH_KEY_CORE }}
 
-      # ШАГ 3: ЖЕСТКИЙ ФИКС САБМОДУЛЕЙ (МЫ ИХ ПРОСТО КЛОНИРУЕМ)
+      # 3. КЛОНИРУЕМ ЗАВИСИМОСТИ (ФИКС BASELINE И SQLCIPHER)
       - name: Force Clone Dependencies
         shell: bash
         run: |
           cd nebula_core
-          # Чистим забагованные сабмодули
+          # Удаляем пустые папки или битые сабмодули
           rm -rf vcpkg external/sqlcipher
           
-          # Качаем vcpkg напрямую (свежий мастер)
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git vcpkg
+          # Клонируем vcpkg ПОЛНОСТЬЮ (без --depth 1), чтобы найти старые коммиты для baseline
+          git clone https://github.com/microsoft/vcpkg.git vcpkg
           
-          # Качаем sqlcipher напрямую (чтобы CMake увидел sqlite3.c)
+          # SQLCipher качаем отдельно, чтобы CMake его увидел
           mkdir -p external/sqlcipher
           git clone --depth 1 https://github.com/sqlcipher/sqlcipher.git external/sqlcipher
           
-          echo "Dependencies cloned manually. Submodule hell bypassed."
+          echo "VCPKG and SQLCipher cloned successfully."
 
+      # 4. Бутстрап vcpkg
       - name: Bootstrap vcpkg
         shell: bash
         run: |
@@ -88,18 +91,21 @@ jobs:
           fi
           echo "VCPKG_ROOT=$(pwd)" >> $GITHUB_ENV
 
+      # 5. Настройка Java 17
       - name: Setup Java JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
+      # 6. Настройка Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
           cache: true
 
+      # 7. Зависимости системы (Linux)
       - name: Install Linux Build Tools
         if: matrix.os == 'ubuntu-22.04'
         run: |
@@ -108,27 +114,31 @@ jobs:
             libgtk-3-dev liblzma-dev libsecret-1-dev \
             m4 autoconf automake libtool nasm libfuse2 libsqlcipher-dev
 
+      # 8. Настройка Android SDK
       - name: Setup Android SDK
         if: matrix.target == 'linux-android'
         uses: android-actions/setup-android@v3
         with:
           packages: "ndk;26.1.10909125"
 
-      - name: Restore real secrets.h
+      # 9. Восстановление secrets.h из GitHub Secrets
+      - name: Restore secrets.h
         shell: bash
         env:
           SECRETS_CONTENT: ${{ secrets.REAL_SECRETS_H }}
         run: |
           mkdir -p nebula_core/include/nebula/core
           echo "$SECRETS_CONTENT" > nebula_core/include/nebula/core/secrets.h
-          echo "Secrets restored."
+          echo "File secrets.h restored from vault."
 
+      # 10. Сборка
       - name: Execute Build Command
         shell: bash
         run: |
           git config --global --add safe.directory '*'
           ${{ matrix.cmd }}
 
+      # 11. Загрузка готовых файлов
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
