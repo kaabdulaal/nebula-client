@@ -30,7 +30,6 @@ jobs:
       - name: Hack VCPKG for Android API 21
         shell: bash
         run: |
-          # УБИВАЕМ ОШИБКУ __write_chk: Жестко прописываем API 21 в триплет!
           cat <<EOF > $GITHUB_WORKSPACE/vcpkg/triplets/arm64-android.cmake
           set(VCPKG_TARGET_ARCHITECTURE arm64)
           set(VCPKG_CRT_LINKAGE dynamic)
@@ -77,15 +76,10 @@ jobs:
           cd $GITHUB_WORKSPACE/nebula_core
           $VCPKG_ROOT/vcpkg install --allow-unsupported
           mkdir -p build && cd build
-
-          sed -i 's/add_executable(aes_gcm_engine_tests/#add_executable(aes_gcm_engine_tests/g' ../CMakeLists.txt || true
-          sed -i 's/add_executable(vault_test/#add_executable(vault_test/g' ../CMakeLists.txt || true
-          sed -i 's/target_link_libraries(aes_gcm_engine_tests/#target_link_libraries(aes_gcm_engine_tests/g' ../CMakeLists.txt || true
-          sed -i 's/target_link_libraries(vault_test/#target_link_libraries(vault_test/g' ../CMakeLists.txt || true
-          sed -i 's/gtest_discover_tests/#gtest_discover_tests/g' ../CMakeLists.txt || true
-          
           cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release -DTDLIB_ROOT=$GITHUB_WORKSPACE/nebula_core/external/tdlib
-          make -j$(nproc)
+          
+          # ВОТ ОНО! Собираем ТОЛЬКО ядро, игнорируя тесты!
+          make nebula_core -j$(nproc)
 
           # --- 2. Сборка Flutter Linux ---
           cd $GITHUB_WORKSPACE/nebula_client
@@ -126,7 +120,6 @@ jobs:
 
           # --- 4. Сборка Android ---
           cd $GITHUB_WORKSPACE/nebula_core
-          # no-binarycaching заставит его пересобрать OpenSSL под API 21!
           export VCPKG_DEFAULT_TRIPLET=arm64-android
           $VCPKG_ROOT/vcpkg install --triplet=arm64-android --allow-unsupported --no-binarycaching
           
@@ -169,7 +162,7 @@ jobs:
       - name: Setup VCPKG
         shell: bash
         run: |
-          git clone https://github.com/microsoft/vcpkg.git $GITHUB_WORKSPACE/vcpkg
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git $GITHUB_WORKSPACE/vcpkg
           $GITHUB_WORKSPACE/vcpkg/bootstrap-vcpkg.bat
           echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> $GITHUB_ENV
 
@@ -197,7 +190,6 @@ jobs:
       - name: Copy TDLib (Windows)
         shell: bash
         run: |
-          # Ищем dll телеги и кидаем ее к exe файлу, чтобы на винде все работало
           if [ -f "$GITHUB_WORKSPACE/nebula_core/external/tdlib/bin/libtdjson.dll" ]; then
             cp "$GITHUB_WORKSPACE/nebula_core/external/tdlib/bin/libtdjson.dll" $GITHUB_WORKSPACE/nebula_client/build/windows/x64/runner/Release/ || true
           fi
