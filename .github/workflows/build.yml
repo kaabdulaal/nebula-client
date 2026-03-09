@@ -5,7 +5,6 @@ on:
 jobs:
   build_linux_android:
     name: Build Linux & Android
-    # Используем 22.04 как самую стабильную платформу
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout Client
@@ -19,6 +18,23 @@ jobs:
           repository: kaabdulaal/nebula-core
           path: nebula_core
           ssh-key: ${{ secrets.SSH_KEY_CORE }}
+
+      - name: Purge Corrupt TDLib & Download Official Release
+        shell: bash
+        run: |
+          echo "Cleaning up corrupt local TDLib binaries..."
+          rm -rf $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.so*
+          
+          echo "Downloading official TDLib 1.8.0 pre-built binaries for Ubuntu..."
+          mkdir -p tdlib_download && cd tdlib_download
+          curl -L https://github.com/tdlib/td/releases/download/v1.8.0/tdlib.zip -o tdlib.zip
+          unzip tdlib.zip
+          
+          mkdir -p $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib
+          cp lib/libtdjson.so.1.8.61 $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/
+          
+          cd $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib
+          ln -sf libtdjson.so.1.8.61 libtdjson.so
 
       - name: Setup VCPKG
         shell: bash
@@ -39,10 +55,10 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Install Linux Build Tools & Dependencies
+      - name: Install Linux Build Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev m4 autoconf automake libtool nasm libfuse2 libsqlcipher-dev gperf php
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev m4 autoconf automake libtool nasm libfuse2 libsqlcipher-dev
 
       - name: Install Android NDK
         run: |
@@ -56,19 +72,6 @@ jobs:
         run: |
           mkdir -p nebula_core/include/nebula/core
           echo "$SECRETS_CONTENT" > nebula_core/include/nebula/core/secrets.h
-
-      - name: Build TDLib from Source (Linux)
-        shell: bash
-        run: |
-          echo "Building TDLib from source to guarantee binary compatibility..."
-          cd $GITHUB_WORKSPACE/nebula_core
-          # Удаляем старые нерабочие бинарники
-          rm -rf external/tdlib/lib/*
-          # Клонируем исходники TDLib
-          git clone --depth 1 -b v1.8.0 https://github.com/tdlib/td.git external/tdlib_src
-          mkdir -p external/tdlib_src/build && cd external/tdlib_src/build
-          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX:PATH=$GITHUB_WORKSPACE/nebula_core/external/tdlib ..
-          cmake --build . --target install -j$(nproc)
 
       - name: Execute Full Build (Linux & Android)
         shell: bash
@@ -91,6 +94,7 @@ jobs:
           cd $GITHUB_WORKSPACE/nebula_client
           flutter pub get
           export CXXFLAGS="-Wno-unknown-warning-option"
+          
           flutter build linux --release
 
           cp $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.so* build/linux/x64/release/bundle/lib/ || true
@@ -125,12 +129,12 @@ jobs:
 
           # --- 4. Сборка Android ---
           cd $GITHUB_WORKSPACE/nebula_core
-          # Используем стандартный кэш vcpkg, чтобы избежать ошибки сборки OpenSSL
           $VCPKG_ROOT/vcpkg install --triplet=arm64-android --allow-unsupported
 
           cd $GITHUB_WORKSPACE/nebula_client
-          # ОБНОВЛЯЕМ build.gradle через sed, чтобы избежать __write_chk в рантайме
-          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle
+          # ФИКС: Обрабатываем и старый Gradle, и новый Kotlin DSL
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle || true
+          sed -i 's/minSdkVersion = flutter.minSdkVersion/minSdkVersion = 24/g' android/app/build.gradle.kts || true
           
           flutter build apk --release --target-platform android-arm64
 
@@ -185,6 +189,11 @@ jobs:
           cd $GITHUB_WORKSPACE/nebula_core
           $VCPKG_ROOT/vcpkg install --triplet=x64-windows
           mkdir build && cd build
+          
+          # ФИКС WINDOWS: Насильно указываем MSVC где лежит sqlite3.h
+          export CXXFLAGS="-I$GITHUB_WORKSPACE/nebula_core/external/sqlcipher"
+          export CFLAGS="-I$GITHUB_WORKSPACE/nebula_core/external/sqlcipher"
+          
           cmake .. -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DCMAKE_BUILD_TYPE=Release -DTDLIB_ROOT="$GITHUB_WORKSPACE/nebula_core/external/tdlib"
           cmake --build . --config Release --target nebula_core
 
