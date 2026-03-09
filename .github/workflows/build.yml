@@ -42,46 +42,114 @@ jobs:
         env:
           SECRETS_CONTENT: ${{ secrets.REAL_SECRETS_H }}
         run: |
-          mkdir -p nebula_core/include/nebula/core
-          echo "$SECRETS_CONTENT" > nebula_core/include/nebula/core/secrets.h
+          SECRETS_PATH="$GITHUB_WORKSPACE/nebula_core/include/nebula/core/secrets.h"
+          mkdir -p "$(dirname "$SECRETS_PATH")"
+          echo "$SECRETS_CONTENT" > "$SECRETS_PATH"
+
+          echo "--- DEBUG: Verify secrets.h was written ---"
+          ls -la "$SECRETS_PATH"
+          echo "--- Content structure check (no values leaked) ---"
+          grep -c "NEBULA_API_ID" "$SECRETS_PATH"   && echo "✅ NEBULA_API_ID present"   || { echo "❌ NEBULA_API_ID MISSING"; exit 1; }
+          grep -c "NEBULA_API_HASH" "$SECRETS_PATH"  && echo "✅ NEBULA_API_HASH present"  || { echo "❌ NEBULA_API_HASH MISSING"; exit 1; }
+          grep -c "NEBULA_GIST_URL" "$SECRETS_PATH"  && echo "✅ NEBULA_GIST_URL present"  || { echo "❌ NEBULA_GIST_URL MISSING"; exit 1; }
+          grep -c "NEBULA_XOR_KEY" "$SECRETS_PATH"   && echo "✅ NEBULA_XOR_KEY present"   || { echo "❌ NEBULA_XOR_KEY MISSING"; exit 1; }
+
+      - name: Cache TDLib
+        id: cache-tdlib
+        uses: actions/cache@v4
+        with:
+          path: nebula_core/external/tdlib
+          key: tdlib-v1.8.0-ubuntu-22.04
 
       - name: Build TDLib from Source
+        if: steps.cache-tdlib.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          echo "Building clean TDLib specifically for Ubuntu 22.04..."
+          echo "Cache MISS — building TDLib from source (this takes ~20 min)..."
           cd $GITHUB_WORKSPACE/nebula_core
           rm -rf external/tdlib/lib/*
           git clone --depth 1 -b v1.8.0 https://github.com/tdlib/td.git external/tdlib_src
           mkdir -p external/tdlib_src/build && cd external/tdlib_src/build
           cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX:PATH=$GITHUB_WORKSPACE/nebula_core/external/tdlib ..
-          # Собираем в 2 потока, чтобы Гитхаб не убил процесс (Займет минут 15-20, ЭТО НОРМАЛЬНО!)
           cmake --build . --target install -j2
+          echo "TDLib build complete. Cleaning up source to save cache space..."
+          rm -rf $GITHUB_WORKSPACE/nebula_core/external/tdlib_src
 
-      - name: Build Nebula Core
+      - name: Verify TDLib
+        shell: bash
+        run: |
+          echo "--- TDLib installation check ---"
+          ls -la $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.so* \
+            && echo "✅ TDLib ready ($(steps.cache-tdlib.outputs.cache-hit == 'true' && echo 'from cache' || echo 'freshly built'))" \
+            || { echo "❌ FATAL: libtdjson.so missing"; exit 1; }
+
+      # NOTE: Standalone "Build Nebula Core" step intentionally REMOVED.
+      # nebula_core is an ffiPlugin — its linux/CMakeLists.txt contains
+      # add_subdirectory("..") which causes `flutter build linux` to rebuild
+      # the entire C++ core from source. The standalone build's output .so
+      # was overwritten by Flutter's plugin system and NEVER used.
+      # We only pre-install vcpkg deps so they're ready for Flutter's CMake.
+
+      - name: Pre-install VCPKG dependencies
         shell: bash
         run: |
           git config --global --add safe.directory '*'
           cd $GITHUB_WORKSPACE/nebula_core
           $VCPKG_ROOT/vcpkg install --allow-unsupported
-          mkdir -p build && cd build
-          cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release -DTDLIB_ROOT=$GITHUB_WORKSPACE/nebula_core/external/tdlib
-          # Собираем только ядро, без тестов
-          make nebula_core -j$(nproc)
+
+      - name: Verify build inputs
+        shell: bash
+        run: |
+          echo "=== 1. secrets.h (absolute path) ==="
+          ls -la "$GITHUB_WORKSPACE/nebula_core/include/nebula/core/secrets.h"
+
+          echo ""
+          echo "=== 2. TDLib installation ==="
+          ls -la "$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/" | head -10
+
+          echo ""
+          echo "=== 3. Flutter plugin symlink ==="
+          cd $GITHUB_WORKSPACE/nebula_client
+          flutter pub get
+          SYMLINK="linux/flutter/ephemeral/.plugin_symlinks/nebula_core"
+          ls -la "$SYMLINK"
+
+          echo ""
+          echo "=== 4. secrets.h reachable VIA symlink ==="
+          ls -la "$SYMLINK/include/nebula/core/secrets.h" \
+            && echo "✅ secrets.h visible through plugin symlink" \
+            || { echo "❌ FATAL: secrets.h NOT visible through symlink"; exit 1; }
+
+          echo ""
+          echo "=== 5. VCPKG_ROOT ==="
+          echo "VCPKG_ROOT=$VCPKG_ROOT"
+          ls "$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            && echo "✅ Toolchain file exists" \
+            || echo "❌ Toolchain file missing"
 
       - name: Build Flutter Linux App
         shell: bash
         run: |
-          # Тыкаем Флаттер носом в свежесобранную либу
           export LIBRARY_PATH="$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib:$LIBRARY_PATH"
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib:$LD_LIBRARY_PATH"
           export LDFLAGS="-Wl,-rpath-link=$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib"
 
           cd $GITHUB_WORKSPACE/nebula_client
-          flutter pub get
           export CXXFLAGS="-Wno-unknown-warning-option"
-          flutter build linux --release
+          flutter build linux --release \
+            --dart-define=NEBULA_FACTORY_CARTRIDGE="${{ secrets.FACTORY_CARTRIDGE }}"
 
-          # Закидываем либу в бандл к бинарнику
+          echo "=== POST-BUILD: Verify bundle contents ==="
+          echo "--- libnebula_core.so ---"
+          ls -la build/linux/x64/release/bundle/lib/libnebula_core.so
+
+          echo "--- libtdjson.so ---"
+          ls -la build/linux/x64/release/bundle/lib/libtdjson.so* || echo "WARNING: libtdjson.so NOT in bundle"
+
+          echo "--- All libs ---"
+          ls -la build/linux/x64/release/bundle/lib/
+
+          # Backup: копируем TDLib в бандл (на случай, если Flutter не скопировал)
           cp $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.so* build/linux/x64/release/bundle/lib/ || true
 
       - name: Package DEB & AppImage
