@@ -91,3 +91,5 @@ temp_*
 lib/firebase_options.dart
 android/app/google-services.json
 >>>>>>> origin/main
+Nebula-Linux-x86_64.deb
+*.bak

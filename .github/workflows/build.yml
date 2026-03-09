@@ -1,163 +1,100 @@
-name: Nebula Multi-Platform Build
+name: Nebula Production Build
 on:
-  # push:
-  #   branches: [ feature/CLI-06-fixed ]
-  workflow_dispatch: {}
+  workflow_dispatch: # Запуск вручную по кнопке в Actions
 
 jobs:
-  build-all:
+  build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # 🐧 LINUX & 🤖 ANDROID
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             target: linux-android
             cmd: |
+              # Собираем зависимости ядра для Linux
+              cd ../nebula_core
+              ./vcpkg/vcpkg install --allow-unsupported
+              cd ../nebula_client
               flutter build linux --release
-              export VCPKG_DEFAULT_TRIPLET=arm64-android
-              export VCPKG_DEFAULT_HOST_TRIPLET=x64-linux
-              (cd ../nebula_core && "$VCPKG_ROOT/vcpkg" install --triplet=arm64-android)
+              
+              # Собираем зависимости для Android
+              cd ../nebula_core
+              ./vcpkg/vcpkg install --triplet=arm64-android --allow-unsupported
+              cd ../nebula_client
               flutter build apk --release --target-platform android-arm64
             artifact_path: |
-              nebula_client/build/app/outputs/flutter-apk/app-release.apk
               nebula_client/build/linux/x64/release/bundle/
+              nebula_client/build/app/outputs/flutter-apk/app-release.apk
 
-          # 🪟 WINDOWS
           - os: windows-latest
             target: windows
-            cmd: flutter build windows --release -v
+            cmd: |
+              cd nebula_client
+              flutter build windows --release
             artifact_path: nebula_client/build/windows/x64/runner/Release/
 
-          # 🍏 MACOS & 📱 IOS
-          - os: macos-latest
-            target: macos-ios
-            cmd: |
-              (cd ../nebula_core && "$VCPKG_ROOT/vcpkg" install --triplet=arm64-osx)
-              (cd ../nebula_core && "$VCPKG_ROOT/vcpkg" install --triplet=x64-osx)
-              flutter build macos --release
-              (cd ../nebula_core && "$VCPKG_ROOT/vcpkg" install --triplet=arm64-ios)
-              flutter build ios --release --no-codesign
-            artifact_path: |
-              nebula_client/build/macos/Build/Products/Release/*.app
-              nebula_client/build/ios/iphoneos/*.app
-
     steps:
-      # 1. Checkout Client (to subdirectory)
+      # 1. Клонируем Клиент
       - name: Checkout Client
         uses: actions/checkout@v4
         with:
           path: nebula_client
-          submodules: recursive
 
-      # 2. Checkout Core (to sibling directory)
+      # 2. Клонируем Ядро (через SSH ключ, который ты добавил в Secrets)
       - name: Checkout Core
         uses: actions/checkout@v4
         with:
-          repository: kaabdulaal/nebula-core
+          repository: kaabdulaal/nebula-core # ПРОВЕРЬ ПУТЬ!
           path: nebula_core
           ssh-key: ${{ secrets.SSH_KEY_CORE }}
-          submodules: recursive
 
-      # 3. Bootstrap vcpkg (Unix)
-      - name: Bootstrap vcpkg (Unix)
-        if: runner.os != 'Windows'
+      # 3. Бутстрап vcpkg
+      - name: Bootstrap vcpkg
         shell: bash
         run: |
           cd nebula_core/vcpkg
-          ./bootstrap-vcpkg.sh
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./bootstrap-vcpkg.bat
+          else
+            ./bootstrap-vcpkg.sh
+          fi
           echo "VCPKG_ROOT=$(pwd)" >> $GITHUB_ENV
 
-      # 3. Bootstrap vcpkg (Windows)
-      - name: Bootstrap vcpkg (Windows)
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: |
-          cd nebula_core\vcpkg
-          call bootstrap-vcpkg.bat
-          echo VCPKG_ROOT=%cd%>> %GITHUB_ENV%
-
-      # 4. Setup Android SDK
-      - name: Setup Android SDK
-        if: matrix.target == 'linux-android'
-        uses: android-actions/setup-android@v3
-        with:
-          packages: "platforms;android-34 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
-
-      - name: Export Android NDK & CMake Home
-        if: matrix.target == 'linux-android'
-        run: |
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
-          echo "PATH=$ANDROID_HOME/cmake/3.22.1/bin:$PATH" >> $GITHUB_ENV
-
-      # 5. Setup Xcode
-      - name: Setup Xcode
-        if: matrix.os == 'macos-latest'
-        run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
-
-      # 6. Setup Flutter
+      # 4. Настройка Flutter
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
           cache: true
 
-      # 7. Install Linux Deps
-      - name: Install Linux Deps
-        if: matrix.os == 'ubuntu-latest'
+      # 5. Зависимости для Linux и Android сборки
+      - name: Install Linux Build Tools
+        if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libsecret-1-dev nasm
+          sudo apt-get install -y clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libsecret-1-dev \
+            m4 autoconf automake libtool nasm
 
-      - name: Install Android vcpkg build tools
+      # 6. Настройка Android SDK (только для Linux-воркера)
+      - name: Setup Android SDK
         if: matrix.target == 'linux-android'
-        run: sudo apt-get update && sudo apt-get install -y m4 autoconf automake libtool
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "ndk;26.1.10909125"
 
-      - name: Run vcpkg (Unix)
-        if: runner.os != 'Windows'
+      # 7. Сборка
+      - name: Execute Build Command
         shell: bash
         run: |
-          cd nebula_core
-          if [ "${{ matrix.target }}" = "macos-ios" ]; then
-            echo "macos-ios installs explicit triplets in matrix cmd."
-          elif [ "${{ matrix.target }}" = "linux-android" ]; then
-            "$VCPKG_ROOT/vcpkg" install --triplet=arm64-android
-          else
-            "$VCPKG_ROOT/vcpkg" install
-          fi
+          # Фикс для Git (из-за разных папок)
+          git config --global --add safe.directory '*'
+          ${{ matrix.cmd }}
 
-      - name: Run vcpkg (Windows)
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: |
-          cd nebula_core
-          %VCPKG_ROOT%\vcpkg.exe install
-
-      # 8. Install macOS Deps
-      - name: Install macOS Deps
-        if: matrix.os == 'macos-latest'
-        run: |
-          brew install nasm
-
-      # 9. Install Windows Deps
-      - name: Install Windows Deps
-        if: matrix.os == 'windows-latest'
-        run: |
-          choco install nasm strawberryperl -y
-
-      # 10. Build
-      - name: Pub Get
-        working-directory: nebula_client
-        run: flutter pub get
-
-      - name: Build Artifacts
-        working-directory: nebula_client
-        run: ${{ matrix.cmd }}
-
-      # 11. Upload Artifacts
+      # 8. Загрузка готовых файлов
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nebula-build-${{ matrix.target }}
+          name: nebula-${{ matrix.target }}
           path: ${{ matrix.artifact_path }}

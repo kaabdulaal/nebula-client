@@ -1,3 +1,6 @@
+set(CMAKE_MAKE_PROGRAM /usr/bin/ninja)
+set(CMAKE_C_COMPILER /usr/bin/clang)
+set(CMAKE_CXX_COMPILER /usr/bin/clang++)
 # Project-level configuration.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 cmake_minimum_required(VERSION 3.13)
@@ -36,7 +39,6 @@ if(DEFINED ENV{IN_NIX_SHELL})
             # It's a script, try to extract the real binary path
             # We assume the wrapper execs the real binary
             execute_process(
-                COMMAND grep -o "/nix/store/.*pkg-config.*/bin/pkg-config" "${PKG_CONFIG_EXECUTABLE}"
                 COMMAND head -n1
                 OUTPUT_VARIABLE REAL_PKG_CONFIG
                 OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -97,7 +99,6 @@ function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_options(${TARGET} PRIVATE -Wno-deprecated-literal-operator)
   # Force GLIBC 2.42 for symbols like __inet_pton_chk required by libgcrypt/libgpg-error
   # This path matches our Nix environment's glibc 2.42 store path.
-  target_link_options(${TARGET} PRIVATE "-L/nix/store/wb6rhpznjfczwlwx23zmdrrw74bayxw4-glibc-2.42-47/lib")
   target_compile_options(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-O3>")
   target_compile_definitions(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:NDEBUG>")
 endfunction()

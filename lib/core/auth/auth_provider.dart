@@ -150,7 +150,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
   Future<void> _startTDLib(TelegramCredentials creds, String docsDirPath) async {
     final dbPath = p.join(docsDirPath, 'nebula_tdlib');
 
-    // Native Resource Guard: Ensure TDLib directory is not locked by a previous process.
     final tdlibDir = Directory(dbPath);
     if (tdlibDir.existsSync()) {
       final lockFile = File(p.join(dbPath, 'td.binlog.lock'));
@@ -1065,8 +1064,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
     debugPrint('[Auth] Vault locked. DB and Telegram session preserved.');
   }
 
-  /// Vault-only nuclear wipe: destroys the cloud channel and local VFS
-  /// but PRESERVES the Telegram session. No re-login required.
   Future<void> nukeVaultAndStartOver() async {
     debugPrint('[Auth] nukeVaultAndStartOver: Destroying vault (preserving TDLib session)...');
 
@@ -1075,7 +1072,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
 
     try {
-      // 1. Cloud Wipe — find and delete the Telegram channel
       final anchorService = VaultAnchorService();
       final channelId = await anchorService.findNebulaChannel();
 
@@ -1086,7 +1082,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
             '@type': 'deleteChat',
             'chat_id': channelId,
           });
-          // Give TDLib a moment to process the deletion
           await Future.delayed(const Duration(milliseconds: 1000));
           debugPrint('[Auth] NUKE: Cloud channel deleted.');
         } catch (e) {
@@ -1096,13 +1091,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
         debugPrint('[Auth] NUKE: No cloud channel found. Skipping cloud wipe.');
       }
 
-      // 2. Local VFS Wipe — close DB, delete files, clear caches
       await _wipeVault(preserveChannel: false);
 
-      // 3. Halt and completely clear SyncEngine RAM caches
       SyncEngine().reset();
 
-      // 4. Transition to vault setup — TDLib stays authenticated
       if (mounted) {
         state = AuthState.needsVaultSetup(
           sessionTimestamp: DateTime.now().millisecondsSinceEpoch,
@@ -1124,7 +1116,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
     debugPrint('[Auth] Destroying account (full wipe)...');
     _isDestroying = true;
 
-    // Safe Guard: Prevent auto-wipe if called within 2s of a successful cloud discovery.
     if (_lastDiscoveryTimestamp != null) {
       final elapsed = DateTime.now().difference(_lastDiscoveryTimestamp!);
       if (elapsed.inSeconds < 2) {
@@ -1157,7 +1148,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
         tempSub.cancel();
       }
 
-      // Fully destroy the C++ FFI instance so the next init() starts clean.
       _repository.dispose();
       await Future.delayed(const Duration(milliseconds: 500));
 
@@ -1237,7 +1227,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
             print('[Auth] Deleting TDLib directory: ${dbDir.path}');
             await dbDir.delete(recursive: true);
           }
-          break; // successfully unlocked and deleted
+          break; 
         } catch (e) {
           print('[Auth] TDLib cleanup failed (attempt ${i + 1}): $e');
           await Future.delayed(const Duration(milliseconds: 500));

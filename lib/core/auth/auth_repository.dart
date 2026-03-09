@@ -43,7 +43,6 @@ class AuthRepository {
     _telegramService.requestAuthState();
   }
 
-  /// Sends a raw TDLib JSON request through the underlying TelegramService.
   void send(Map<String, dynamic> request) {
     _telegramService.send(request);
   }

@@ -107,7 +107,6 @@ class SyncEngine extends ChangeNotifier {
     _isPaused = false;
   }
 
-  /// Completely clears the SyncEngine state from RAM (used during Vault Reset).
   void reset() {
     pause();
     _lastGhostPurgeTimes.clear();
