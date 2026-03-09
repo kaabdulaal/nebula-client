@@ -100,13 +100,6 @@ jobs:
             && echo "✅ TDLib ready ($(steps.cache-tdlib.outputs.cache-hit == 'true' && echo 'from cache' || echo 'freshly built'))" \
             || { echo "❌ FATAL: libtdjson.so missing"; exit 1; }
 
-      # NOTE: Standalone "Build Nebula Core" step intentionally REMOVED.
-      # nebula_core is an ffiPlugin — its linux/CMakeLists.txt contains
-      # add_subdirectory("..") which causes `flutter build linux` to rebuild
-      # the entire C++ core from source. The standalone build's output .so
-      # was overwritten by Flutter's plugin system and NEVER used.
-      # We only pre-install vcpkg deps so they're ready for Flutter's CMake.
-
       - name: Pre-install VCPKG dependencies
         shell: bash
         run: |
@@ -129,6 +122,26 @@ jobs:
           find $GITHUB_WORKSPACE/nebula_core/vcpkg_installed -name "libjsoncpp*" 2>/dev/null | head -3
           find $GITHUB_WORKSPACE/nebula_core/vcpkg_installed -name "libssl*" -o -name "libcrypto*" 2>/dev/null | head -3
           echo "✅ VCPKG verification complete"
+
+      - name: Build Nebula Core (Standalone)
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/nebula_core
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTDLIB_ROOT=$GITHUB_WORKSPACE/nebula_core/external/tdlib
+          make nebula_core -j$(nproc)
+
+          echo "=== Copying libnebula_core.so to expected path ==="
+          mkdir -p $GITHUB_WORKSPACE/nebula_core/linux
+          cp $GITHUB_WORKSPACE/nebula_core/build/libnebula_core.so $GITHUB_WORKSPACE/nebula_core/linux/libnebula_core.so
+
+          echo "--- Verify .so at expected path ---"
+          ls -la $GITHUB_WORKSPACE/nebula_core/linux/libnebula_core.so \
+            && echo "✅ libnebula_core.so ready for Flutter" \
+            || { echo "❌ FATAL: libnebula_core.so not produced"; exit 1; }
 
       - name: Verify build inputs
         shell: bash
