@@ -18,8 +18,9 @@ jobs:
               flutter pub get
 
               # 1. Сборка зависимостей ядра для Linux
-              # Мы используем vcpkg из КОРНЯ воркера
-              $GITHUB_WORKSPACE/vcpkg/vcpkg install --dir $GITHUB_WORKSPACE/nebula_core --allow-unsupported
+              # Заходим в папку, где лежит vcpkg.json
+              cd $GITHUB_WORKSPACE/nebula_core
+              $VCPKG_ROOT/vcpkg install --allow-unsupported
 
               # 2. Упаковка Linux (deb, appimage)
               cd $GITHUB_WORKSPACE/nebula_client
@@ -28,10 +29,11 @@ jobs:
               flutter_distributor package --platform linux --targets deb,appimage
 
               # 3. Сборка Android
-              # Переключаем триплет и ставим либы для Android
+              # Снова в папку ядра для Android-зависимостей
+              cd $GITHUB_WORKSPACE/nebula_core
               export VCPKG_DEFAULT_TRIPLET=arm64-android
               export VCPKG_DEFAULT_HOST_TRIPLET=x64-linux
-              $GITHUB_WORKSPACE/vcpkg/vcpkg install --dir $GITHUB_WORKSPACE/nebula_core --triplet=arm64-android --allow-unsupported
+              $VCPKG_ROOT/vcpkg install --triplet=arm64-android --allow-unsupported
 
               cd $GITHUB_WORKSPACE/nebula_client
               flutter build apk --release --target-platform android-arm64
@@ -62,23 +64,20 @@ jobs:
           path: nebula_core
           ssh-key: ${{ secrets.SSH_KEY_CORE }}
 
-      # 3. КЛОНИРУЕМ ЗАВИСИМОСТИ В КОРЕНЬ (ЧТОБЫ НЕ БЫЛО КОНФЛИКТОВ ПУТЕЙ)
+      # 3. КЛОНИРУЕМ ЗАВИСИМОСТИ В КОРЕНЬ (БЕЗ КОНФЛИКТОВ)
       - name: Force Clone Dependencies
         shell: bash
         run: |
-          # Клонируем vcpkg в КОРЕНЬ воркера, а не внутрь ядра
           rm -rf $GITHUB_WORKSPACE/vcpkg
           git clone https://github.com/microsoft/vcpkg.git $GITHUB_WORKSPACE/vcpkg
           
-          # Клонируем sqlcipher внутрь ядра (тут конфликтов обычно нет)
           cd nebula_core
           rm -rf external/sqlcipher
           mkdir -p external/sqlcipher
           git clone --depth 1 https://github.com/sqlcipher/sqlcipher.git external/sqlcipher
-          
-          echo "VCPKG cloned to root, SQLCipher to core."
+          echo "VCPKG and SQLCipher cloned."
 
-      # 4. Бутстрап vcpkg (из нового места)
+      # 4. Бутстрап vcpkg
       - name: Bootstrap vcpkg
         shell: bash
         run: |
@@ -89,7 +88,6 @@ jobs:
             chmod +x bootstrap-vcpkg.sh
             ./bootstrap-vcpkg.sh
           fi
-          # Прописываем корень для всех остальных шагов
           echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> $GITHUB_ENV
 
       # 5. Настройка Java 17
