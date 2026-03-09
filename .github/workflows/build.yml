@@ -1,10 +1,10 @@
-name: Nebula Production Build
+name: Nebula Linux Release Build
 on:
   workflow_dispatch:
 
 jobs:
-  build_linux_android:
-    name: Build Linux & Android
+  build_linux:
+    name: Build Linux (DEB & AppImage)
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout Client
@@ -27,26 +27,15 @@ jobs:
           $GITHUB_WORKSPACE/vcpkg/bootstrap-vcpkg.sh
           echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> $GITHUB_ENV
 
-      - name: Setup Java JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
 
-      - name: Install Linux Build Tools
+      - name: Install Linux Build Tools & Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev m4 autoconf automake libtool nasm libfuse2 libsqlcipher-dev
-
-      - name: Install Android NDK
-        run: |
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev m4 autoconf automake libtool nasm libfuse2 libsqlcipher-dev gperf php
 
       - name: Restore secrets.h
         shell: bash
@@ -56,37 +45,51 @@ jobs:
           mkdir -p nebula_core/include/nebula/core
           echo "$SECRETS_CONTENT" > nebula_core/include/nebula/core/secrets.h
 
-      - name: Execute Full Build (Linux & Android)
+      - name: Build TDLib from Source
+        shell: bash
+        run: |
+          echo "Building clean TDLib specifically for Ubuntu 22.04..."
+          cd $GITHUB_WORKSPACE/nebula_core
+          rm -rf external/tdlib/lib/*
+          git clone --depth 1 -b v1.8.0 https://github.com/tdlib/td.git external/tdlib_src
+          mkdir -p external/tdlib_src/build && cd external/tdlib_src/build
+          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX:PATH=$GITHUB_WORKSPACE/nebula_core/external/tdlib ..
+          # Собираем в 2 потока, чтобы Гитхаб не убил процесс (Займет минут 15-20, ЭТО НОРМАЛЬНО!)
+          cmake --build . --target install -j2
+
+      - name: Build Nebula Core
         shell: bash
         run: |
           git config --global --add safe.directory '*'
-
-          # --- 1. Сборка ядра Linux ---
           cd $GITHUB_WORKSPACE/nebula_core
-          # Делаем симлинк для тупого линковщика прям из твоих исходников
-          cd external/tdlib/lib
-          cp libtdjson.so libtdjson.so.1.8.61 || true
-          cd $GITHUB_WORKSPACE/nebula_core
-          
           $VCPKG_ROOT/vcpkg install --allow-unsupported
           mkdir -p build && cd build
           cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release -DTDLIB_ROOT=$GITHUB_WORKSPACE/nebula_core/external/tdlib
+          # Собираем только ядро, без тестов
           make nebula_core -j$(nproc)
 
-          # --- ФИКС ЛИНКОВЩИКА FLUTTER ---
+      - name: Build Flutter Linux App
+        shell: bash
+        run: |
+          # Тыкаем Флаттер носом в свежесобранную либу
           export LIBRARY_PATH="$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib:$LIBRARY_PATH"
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib:$LD_LIBRARY_PATH"
           export LDFLAGS="-Wl,-rpath-link=$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib"
 
-          # --- 2. Сборка Flutter Linux ---
           cd $GITHUB_WORKSPACE/nebula_client
           flutter pub get
           export CXXFLAGS="-Wno-unknown-warning-option"
           flutter build linux --release
 
+          # Закидываем либу в бандл к бинарнику
           cp $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.so* build/linux/x64/release/bundle/lib/ || true
 
-          # --- 3. Упаковка DEB и AppImage ---
+      - name: Package DEB & AppImage
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/nebula_client
+          
+          # --- Упаковка DEB ---
           mkdir -p dist/debian/usr/bin
           mkdir -p dist/debian/DEBIAN
           cp -r build/linux/x64/release/bundle/* dist/debian/usr/bin/
@@ -99,7 +102,7 @@ jobs:
           EOF
           dpkg-deb --build dist/debian nebula-client.deb
 
-          # ФИКС: Правильная ссылка на appimagetool
+          # --- Упаковка AppImage ---
           curl -L https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -o appimagetool
           chmod +x appimagetool
           mkdir -p dist/AppDir
@@ -115,86 +118,10 @@ jobs:
           touch dist/AppDir/nebula.png
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run dist/AppDir nebula-client.AppImage || true
 
-          # --- 4. Сборка Android ---
-          cd $GITHUB_WORKSPACE/nebula_core
-          $VCPKG_ROOT/vcpkg install --triplet=arm64-android --allow-unsupported
-
-          cd $GITHUB_WORKSPACE/nebula_client
-          # ФИКС ANDROID: Безопасная замена, которая не крашит скрипт
-          if [ -f android/app/build.gradle ]; then
-            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle
-          fi
-          if [ -f android/app/build.gradle.kts ]; then
-            sed -i 's/minSdkVersion = flutter.minSdkVersion/minSdkVersion = 24/g' android/app/build.gradle.kts
-          fi
-          
-          flutter build apk --release --target-platform android-arm64
-
-      - name: Upload Linux & Android Artifacts
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nebula-linux-android
+          name: nebula-linux-release
           path: |
             nebula_client/*.deb
             nebula_client/*.AppImage
-            nebula_client/build/app/outputs/flutter-apk/app-release.apk
-
-  build_windows:
-    name: Build Windows
-    runs-on: windows-latest
-    steps:
-      - name: Checkout Client
-        uses: actions/checkout@v4
-        with:
-          path: nebula_client
-
-      - name: Checkout Core
-        uses: actions/checkout@v4
-        with:
-          repository: kaabdulaal/nebula-core
-          path: nebula_core
-          ssh-key: ${{ secrets.SSH_KEY_CORE }}
-
-      - name: Restore secrets.h
-        shell: bash
-        env:
-          SECRETS_CONTENT: ${{ secrets.REAL_SECRETS_H }}
-        run: |
-          mkdir -p nebula_core/include/nebula/core
-          echo "$SECRETS_CONTENT" > nebula_core/include/nebula/core/secrets.h
-
-      - name: Setup VCPKG
-        shell: bash
-        run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git $GITHUB_WORKSPACE/vcpkg
-          $GITHUB_WORKSPACE/vcpkg/bootstrap-vcpkg.bat
-          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> $GITHUB_ENV
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-
-      - name: Build Core (Windows)
-        shell: bash
-        run: |
-          cd $GITHUB_WORKSPACE/nebula_core
-          
-          # ФИКС WINDOWS: Засовываем sqlite3.h прямо в папку, которую MSVC уже видит
-          cp external/sqlcipher/sqlite3.h include/nebula/core/
-          
-          $VCPKG_ROOT/vcpkg install --triplet=x64-windows
-          mkdir build && cd build
-          cmake .. -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DCMAKE_BUILD_TYPE=Release -DTDLIB_ROOT="$GITHUB_WORKSPACE/nebula_core/external/tdlib"
-          cmake --build . --config Release --target nebula_core
-
-      - name: Build Flutter (Windows)
-        shell: bash
-        run: |
-          cd $GITHUB_WORKSPACE/nebula_client
-          flutter pub get
-          flutter build windows --release
-
-      - name: Copy TDLib (Windows)
-        shell: bash
-        run:
