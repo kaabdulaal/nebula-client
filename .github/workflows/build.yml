@@ -18,8 +18,8 @@ jobs:
               flutter pub get
 
               # 1. Сборка зависимостей ядра для Linux
-              cd $GITHUB_WORKSPACE/nebula_core
-              ./vcpkg/vcpkg install --allow-unsupported
+              # Мы используем vcpkg из КОРНЯ воркера
+              $GITHUB_WORKSPACE/vcpkg/vcpkg install --dir $GITHUB_WORKSPACE/nebula_core --allow-unsupported
 
               # 2. Упаковка Linux (deb, appimage)
               cd $GITHUB_WORKSPACE/nebula_client
@@ -28,10 +28,10 @@ jobs:
               flutter_distributor package --platform linux --targets deb,appimage
 
               # 3. Сборка Android
-              cd $GITHUB_WORKSPACE/nebula_core
+              # Переключаем триплет и ставим либы для Android
               export VCPKG_DEFAULT_TRIPLET=arm64-android
               export VCPKG_DEFAULT_HOST_TRIPLET=x64-linux
-              ./vcpkg/vcpkg install --triplet=arm64-android --allow-unsupported
+              $GITHUB_WORKSPACE/vcpkg/vcpkg install --dir $GITHUB_WORKSPACE/nebula_core --triplet=arm64-android --allow-unsupported
 
               cd $GITHUB_WORKSPACE/nebula_client
               flutter build apk --release --target-platform android-arm64
@@ -54,7 +54,7 @@ jobs:
         with:
           path: nebula_client
 
-      # 2. Клонируем Ядро (с SSH ключом)
+      # 2. Клонируем Ядро
       - name: Checkout Core
         uses: actions/checkout@v4
         with:
@@ -62,30 +62,35 @@ jobs:
           path: nebula_core
           ssh-key: ${{ secrets.SSH_KEY_CORE }}
 
-      # 3. КЛОНИРУЕМ ЗАВИСИМОСТИ (ФИКС BASELINE И SQLCIPHER)
+      # 3. КЛОНИРУЕМ ЗАВИСИМОСТИ В КОРЕНЬ (ЧТОБЫ НЕ БЫЛО КОНФЛИКТОВ ПУТЕЙ)
       - name: Force Clone Dependencies
         shell: bash
         run: |
+          # Клонируем vcpkg в КОРЕНЬ воркера, а не внутрь ядра
+          rm -rf $GITHUB_WORKSPACE/vcpkg
+          git clone https://github.com/microsoft/vcpkg.git $GITHUB_WORKSPACE/vcpkg
+          
+          # Клонируем sqlcipher внутрь ядра (тут конфликтов обычно нет)
           cd nebula_core
-          rm -rf vcpkg external/sqlcipher
-          # Клонируем vcpkg ПОЛНОСТЬЮ (без --depth 1) для корректного baseline
-          git clone https://github.com/microsoft/vcpkg.git vcpkg
-          # SQLCipher качаем отдельно
+          rm -rf external/sqlcipher
           mkdir -p external/sqlcipher
           git clone --depth 1 https://github.com/sqlcipher/sqlcipher.git external/sqlcipher
-          echo "VCPKG and SQLCipher cloned successfully."
+          
+          echo "VCPKG cloned to root, SQLCipher to core."
 
-      # 4. Бутстрап vcpkg
+      # 4. Бутстрап vcpkg (из нового места)
       - name: Bootstrap vcpkg
         shell: bash
         run: |
-          cd nebula_core/vcpkg
+          cd $GITHUB_WORKSPACE/vcpkg
           if [ "${{ runner.os }}" = "Windows" ]; then
             ./bootstrap-vcpkg.bat
           else
+            chmod +x bootstrap-vcpkg.sh
             ./bootstrap-vcpkg.sh
           fi
-          echo "VCPKG_ROOT=$(pwd)" >> $GITHUB_ENV
+          # Прописываем корень для всех остальных шагов
+          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> $GITHUB_ENV
 
       # 5. Настройка Java 17
       - name: Setup Java JDK 17
@@ -110,7 +115,7 @@ jobs:
             libgtk-3-dev liblzma-dev libsecret-1-dev \
             m4 autoconf automake libtool nasm libfuse2 libsqlcipher-dev
 
-      # 8. Установка Android NDK (Фикс зависания)
+      # 8. Установка Android NDK
       - name: Install Android NDK
         if: matrix.target == 'linux-android'
         run: |
@@ -125,7 +130,6 @@ jobs:
         run: |
           mkdir -p nebula_core/include/nebula/core
           echo "$SECRETS_CONTENT" > nebula_core/include/nebula/core/secrets.h
-          echo "File secrets.h restored."
 
       # 10. Сборка
       - name: Execute Build Command
