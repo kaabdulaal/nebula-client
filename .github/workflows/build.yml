@@ -16,23 +16,23 @@ jobs:
               # 0. Подготовка Flutter
               cd $GITHUB_WORKSPACE/nebula_client
               flutter pub get
-              
+
               # 1. Сборка зависимостей ядра для Linux
               cd $GITHUB_WORKSPACE/nebula_core
               ./vcpkg/vcpkg install --allow-unsupported
-              
+
               # 2. Упаковка Linux (deb, appimage)
               cd $GITHUB_WORKSPACE/nebula_client
               dart pub global activate flutter_distributor
               export PATH="$PATH":"$HOME/.pub-cache/bin"
               flutter_distributor package --platform linux --targets deb,appimage
-              
+
               # 3. Сборка Android
               cd $GITHUB_WORKSPACE/nebula_core
               export VCPKG_DEFAULT_TRIPLET=arm64-android
               export VCPKG_DEFAULT_HOST_TRIPLET=x64-linux
               ./vcpkg/vcpkg install --triplet=arm64-android --allow-unsupported
-              
+
               cd $GITHUB_WORKSPACE/nebula_client
               flutter build apk --release --target-platform android-arm64
             artifact_path: |
@@ -67,16 +67,12 @@ jobs:
         shell: bash
         run: |
           cd nebula_core
-          # Удаляем пустые папки или битые сабмодули
           rm -rf vcpkg external/sqlcipher
-          
-          # Клонируем vcpkg ПОЛНОСТЬЮ (без --depth 1), чтобы найти старые коммиты для baseline
+          # Клонируем vcpkg ПОЛНОСТЬЮ (без --depth 1) для корректного baseline
           git clone https://github.com/microsoft/vcpkg.git vcpkg
-          
-          # SQLCipher качаем отдельно, чтобы CMake его увидел
+          # SQLCipher качаем отдельно
           mkdir -p external/sqlcipher
           git clone --depth 1 https://github.com/sqlcipher/sqlcipher.git external/sqlcipher
-          
           echo "VCPKG and SQLCipher cloned successfully."
 
       # 4. Бутстрап vcpkg
@@ -114,14 +110,14 @@ jobs:
             libgtk-3-dev liblzma-dev libsecret-1-dev \
             m4 autoconf automake libtool nasm libfuse2 libsqlcipher-dev
 
-      # 8. Настройка Android SDK
-      - name: Setup Android SDK
+      # 8. Установка Android NDK (Фикс зависания)
+      - name: Install Android NDK
         if: matrix.target == 'linux-android'
-        uses: android-actions/setup-android@v3
-        with:
-          packages: "ndk;26.1.10909125"
+        run: |
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
 
-      # 9. Восстановление secrets.h из GitHub Secrets
+      # 9. Восстановление secrets.h
       - name: Restore secrets.h
         shell: bash
         env:
@@ -129,7 +125,7 @@ jobs:
         run: |
           mkdir -p nebula_core/include/nebula/core
           echo "$SECRETS_CONTENT" > nebula_core/include/nebula/core/secrets.h
-          echo "File secrets.h restored from vault."
+          echo "File secrets.h restored."
 
       # 10. Сборка
       - name: Execute Build Command
