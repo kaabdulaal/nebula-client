@@ -107,6 +107,10 @@ jobs:
           chmod +x appimagetool
           mkdir -p dist/AppDir
           cp -r build/linux/x64/release/bundle/* dist/AppDir/
+
+          ln -s nebula_client dist/AppDir/AppRun
+          chmod +x dist/AppDir/AppRun
+          
           cat <<EOF > dist/AppDir/nebula.desktop
           [Desktop Entry]
           Name=Nebula
