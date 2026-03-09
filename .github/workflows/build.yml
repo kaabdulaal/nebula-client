@@ -49,6 +49,7 @@ jobs:
           repository: kaabdulaal/nebula-core # ПРОВЕРЬ ПУТЬ!
           path: nebula_core
           ssh-key: ${{ secrets.SSH_KEY_CORE }}
+          submodules: recursive
 
       # 3. Бутстрап vcpkg
       - name: Bootstrap vcpkg
