@@ -5,7 +5,8 @@ on:
 jobs:
   build_linux_android:
     name: Build Linux & Android
-    runs-on: ubuntu-24.04
+    # Используем 22.04 как самую стабильную платформу
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout Client
         uses: actions/checkout@v4
@@ -27,17 +28,6 @@ jobs:
           $GITHUB_WORKSPACE/vcpkg/bootstrap-vcpkg.sh
           echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> $GITHUB_ENV
 
-      - name: Hack VCPKG for Android API 21
-        shell: bash
-        run: |
-          cat <<EOF > $GITHUB_WORKSPACE/vcpkg/triplets/arm64-android.cmake
-          set(VCPKG_TARGET_ARCHITECTURE arm64)
-          set(VCPKG_CRT_LINKAGE dynamic)
-          set(VCPKG_LIBRARY_LINKAGE static)
-          set(VCPKG_CMAKE_SYSTEM_NAME Android)
-          set(ANDROID_PLATFORM android-21)
-          EOF
-
       - name: Setup Java JDK 17
         uses: actions/setup-java@v4
         with:
@@ -49,10 +39,10 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Install Linux Build Tools
+      - name: Install Linux Build Tools & Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev m4 autoconf automake libtool nasm libfuse2 libsqlcipher-dev
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev m4 autoconf automake libtool nasm libfuse2 libsqlcipher-dev gperf php
 
       - name: Install Android NDK
         run: |
@@ -67,6 +57,19 @@ jobs:
           mkdir -p nebula_core/include/nebula/core
           echo "$SECRETS_CONTENT" > nebula_core/include/nebula/core/secrets.h
 
+      - name: Build TDLib from Source (Linux)
+        shell: bash
+        run: |
+          echo "Building TDLib from source to guarantee binary compatibility..."
+          cd $GITHUB_WORKSPACE/nebula_core
+          # Удаляем старые нерабочие бинарники
+          rm -rf external/tdlib/lib/*
+          # Клонируем исходники TDLib
+          git clone --depth 1 -b v1.8.0 https://github.com/tdlib/td.git external/tdlib_src
+          mkdir -p external/tdlib_src/build && cd external/tdlib_src/build
+          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX:PATH=$GITHUB_WORKSPACE/nebula_core/external/tdlib ..
+          cmake --build . --target install -j$(nproc)
+
       - name: Execute Full Build (Linux & Android)
         shell: bash
         run: |
@@ -77,16 +80,9 @@ jobs:
           $VCPKG_ROOT/vcpkg install --allow-unsupported
           mkdir -p build && cd build
           cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release -DTDLIB_ROOT=$GITHUB_WORKSPACE/nebula_core/external/tdlib
-
-          # Собираем ТОЛЬКО ядро, игнорируя тесты!
           make nebula_core -j$(nproc)
 
           # --- ФИКС ЛИНКОВЩИКА FLUTTER ---
-          # Линковщик ищет версию 1.8.61. Создаем копию файла специально для него!
-          cd $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib
-          cp libtdjson.so libtdjson.so.1.8.61 || true
-          
-          # Запихиваем путь к библиотеке в глотку компилятору и линковщику
           export LIBRARY_PATH="$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib:$LIBRARY_PATH"
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib:$LD_LIBRARY_PATH"
           export LDFLAGS="-Wl,-rpath-link=$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib"
@@ -97,7 +93,6 @@ jobs:
           export CXXFLAGS="-Wno-unknown-warning-option"
           flutter build linux --release
 
-          # Копируем ВСЕ версии либы телеги в финальный бандл
           cp $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.so* build/linux/x64/release/bundle/lib/ || true
 
           # --- 3. Упаковка DEB и AppImage ---
@@ -130,11 +125,13 @@ jobs:
 
           # --- 4. Сборка Android ---
           cd $GITHUB_WORKSPACE/nebula_core
-          export VCPKG_DEFAULT_TRIPLET=arm64-android
-          # Используем no-binarycaching чтобы пересобрать OpenSSL под API 21 и избежать ошибки __write_chk
-          $VCPKG_ROOT/vcpkg install --triplet=arm64-android --allow-unsupported --no-binarycaching
+          # Используем стандартный кэш vcpkg, чтобы избежать ошибки сборки OpenSSL
+          $VCPKG_ROOT/vcpkg install --triplet=arm64-android --allow-unsupported
 
           cd $GITHUB_WORKSPACE/nebula_client
+          # ОБНОВЛЯЕМ build.gradle через sed, чтобы избежать __write_chk в рантайме
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle
+          
           flutter build apk --release --target-platform android-arm64
 
       - name: Upload Linux & Android Artifacts
@@ -189,8 +186,6 @@ jobs:
           $VCPKG_ROOT/vcpkg install --triplet=x64-windows
           mkdir build && cd build
           cmake .. -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DCMAKE_BUILD_TYPE=Release -DTDLIB_ROOT="$GITHUB_WORKSPACE/nebula_core/external/tdlib"
-          
-          # Собираем только ядро, чтобы не упало на тестах, как в Linux
           cmake --build . --config Release --target nebula_core
 
       - name: Build Flutter (Windows)
@@ -203,7 +198,6 @@ jobs:
       - name: Copy TDLib (Windows)
         shell: bash
         run: |
-          # Копируем DLL телеги в папку с собранным EXEшником
           if [ -f "$GITHUB_WORKSPACE/nebula_core/external/tdlib/bin/libtdjson.dll" ]; then
             cp "$GITHUB_WORKSPACE/nebula_core/external/tdlib/bin/libtdjson.dll" $GITHUB_WORKSPACE/nebula_client/build/windows/x64/runner/Release/ || true
           fi
