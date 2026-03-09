@@ -16,23 +16,23 @@ jobs:
               # 0. Подтягиваем зависимости Flutter (обязательно для плагинов)
               cd $GITHUB_WORKSPACE/nebula_client
               flutter pub get
-              
+
               # 1. Сборка зависимостей ядра для Linux
               cd $GITHUB_WORKSPACE/nebula_core
               ./vcpkg/vcpkg install --allow-unsupported
-              
+
               # 2. Упаковка Linux (deb, appimage)
               cd $GITHUB_WORKSPACE/nebula_client
               dart pub global activate flutter_distributor
               export PATH="$PATH":"$HOME/.pub-cache/bin"
               flutter_distributor package --platform linux --targets deb,appimage
-              
+
               # 3. Сборка Android
               cd $GITHUB_WORKSPACE/nebula_core
               export VCPKG_DEFAULT_TRIPLET=arm64-android
               export VCPKG_DEFAULT_HOST_TRIPLET=x64-linux
               ./vcpkg/vcpkg install --triplet=arm64-android --allow-unsupported
-              
+
               cd $GITHUB_WORKSPACE/nebula_client
               flutter build apk --release --target-platform android-arm64
             artifact_path: |
@@ -109,6 +109,16 @@ jobs:
         uses: android-actions/setup-android@v3
         with:
           packages: "ndk;26.1.10909125"
+
+      # 8.5 Восстанавливаем НАСТОЯЩИЙ secrets.h из GitHub Secrets
+      - name: Restore real secrets.h
+        shell: bash
+        env:
+          SECRETS_CONTENT: ${{ secrets.REAL_SECRETS_H }}
+        run: |
+          mkdir -p nebula_core/include/nebula/core
+          echo "$SECRETS_CONTENT" > nebula_core/include/nebula/core/secrets.h
+          echo "Настоящий secrets.h успешно восстановлен!"
 
       # 9. Сборка (Выполнение cmd из матрицы)
       - name: Execute Build Command
