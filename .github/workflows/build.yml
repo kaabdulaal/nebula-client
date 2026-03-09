@@ -15,7 +15,7 @@ jobs:
       - name: Checkout Core
         uses: actions/checkout@v4
         with:
-          repository: kaabdulaal/nebula-core
+          repository: kaabdulaal/nebula-core # ПРОВЕРЬ ПУТЬ!
           path: nebula_core
           ssh-key: ${{ secrets.SSH_KEY_CORE }}
 
