@@ -1,6 +1,6 @@
 name: Nebula Production Build
 on:
-  workflow_dispatch: # Запуск вручную
+  workflow_dispatch:
 
 jobs:
   build:
@@ -13,23 +13,28 @@ jobs:
           - os: ubuntu-22.04
             target: linux-android
             cmd: |
-              # 0. Подготовка Flutter
+              # 0. Flutter pub get
               cd $GITHUB_WORKSPACE/nebula_client
               flutter pub get
 
-              # 1. Сборка зависимостей ядра для Linux
-              # Заходим в папку, где лежит vcpkg.json
+              # 1. Сборка зависимостей ядра (VCPKG)
               cd $GITHUB_WORKSPACE/nebula_core
               $VCPKG_ROOT/vcpkg install --allow-unsupported
 
-              # 2. Упаковка Linux (deb, appimage)
+              # 2. Сборка самого ядра (теперь все файлы в main!)
+              mkdir -p build && cd build
+              cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
+              make -j$(nproc)
+              mkdir -p ../linux
+              cp libnebula_core.so ../linux/
+
+              # 3. Упаковка Linux (deb, appimage)
               cd $GITHUB_WORKSPACE/nebula_client
               dart pub global activate flutter_distributor
               export PATH="$PATH":"$HOME/.pub-cache/bin"
               flutter_distributor package --platform linux --targets deb,appimage
 
-              # 3. Сборка Android
-              # Снова в папку ядра для Android-зависимостей
+              # 4. Сборка Android (APK)
               cd $GITHUB_WORKSPACE/nebula_core
               export VCPKG_DEFAULT_TRIPLET=arm64-android
               export VCPKG_DEFAULT_HOST_TRIPLET=x64-linux
@@ -50,13 +55,11 @@ jobs:
             artifact_path: nebula_client/build/windows/x64/runner/Release/
 
     steps:
-      # 1. Клонируем Клиент
       - name: Checkout Client
         uses: actions/checkout@v4
         with:
           path: nebula_client
 
-      # 2. Клонируем Ядро
       - name: Checkout Core
         uses: actions/checkout@v4
         with:
@@ -64,47 +67,28 @@ jobs:
           path: nebula_core
           ssh-key: ${{ secrets.SSH_KEY_CORE }}
 
-      # 3. КЛОНИРУЕМ ЗАВИСИМОСТИ В КОРЕНЬ (БЕЗ КОНФЛИКТОВ)
-      - name: Force Clone Dependencies
+      # Клонируем vcpkg в корень (чтобы избежать конфликтов с сабмодулями внутри ядра)
+      - name: Setup VCPKG
         shell: bash
         run: |
           rm -rf $GITHUB_WORKSPACE/vcpkg
           git clone https://github.com/microsoft/vcpkg.git $GITHUB_WORKSPACE/vcpkg
-          
-          cd nebula_core
-          rm -rf external/sqlcipher
-          mkdir -p external/sqlcipher
-          git clone --depth 1 https://github.com/sqlcipher/sqlcipher.git external/sqlcipher
-          echo "VCPKG and SQLCipher cloned."
-
-      # 4. Бутстрап vcpkg
-      - name: Bootstrap vcpkg
-        shell: bash
-        run: |
           cd $GITHUB_WORKSPACE/vcpkg
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            ./bootstrap-vcpkg.bat
-          else
-            chmod +x bootstrap-vcpkg.sh
-            ./bootstrap-vcpkg.sh
-          fi
+          ./bootstrap-vcpkg.sh
           echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> $GITHUB_ENV
 
-      # 5. Настройка Java 17
       - name: Setup Java JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      # 6. Настройка Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
           cache: true
 
-      # 7. Зависимости системы (Linux)
       - name: Install Linux Build Tools
         if: matrix.os == 'ubuntu-22.04'
         run: |
@@ -113,14 +97,12 @@ jobs:
             libgtk-3-dev liblzma-dev libsecret-1-dev \
             m4 autoconf automake libtool nasm libfuse2 libsqlcipher-dev
 
-      # 8. Установка Android NDK
       - name: Install Android NDK
         if: matrix.target == 'linux-android'
         run: |
           echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
 
-      # 9. Восстановление secrets.h
       - name: Restore secrets.h
         shell: bash
         env:
@@ -129,14 +111,12 @@ jobs:
           mkdir -p nebula_core/include/nebula/core
           echo "$SECRETS_CONTENT" > nebula_core/include/nebula/core/secrets.h
 
-      # 10. Сборка
       - name: Execute Build Command
         shell: bash
         run: |
           git config --global --add safe.directory '*'
           ${{ matrix.cmd }}
 
-      # 11. Загрузка готовых файлов
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
