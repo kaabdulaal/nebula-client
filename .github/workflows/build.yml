@@ -13,18 +13,26 @@ jobs:
           - os: ubuntu-22.04
             target: linux-android
             cmd: |
+              # 0. Flutter pub get
               cd $GITHUB_WORKSPACE/nebula_client
               flutter pub get
+              
+              # 1. Сборка ядра для Linux
               cd $GITHUB_WORKSPACE/nebula_core
               ./vcpkg/vcpkg install --allow-unsupported
+              
+              # 2. Сборка Linux пакетов
               cd $GITHUB_WORKSPACE/nebula_client
               dart pub global activate flutter_distributor
               export PATH="$PATH":"$HOME/.pub-cache/bin"
               flutter_distributor package --platform linux --targets deb,appimage
+              
+              # 3. Сборка Android (APK)
               cd $GITHUB_WORKSPACE/nebula_core
               export VCPKG_DEFAULT_TRIPLET=arm64-android
               export VCPKG_DEFAULT_HOST_TRIPLET=x64-linux
               ./vcpkg/vcpkg install --triplet=arm64-android --allow-unsupported
+              
               cd $GITHUB_WORKSPACE/nebula_client
               flutter build apk --release --target-platform android-arm64
             artifact_path: |
@@ -52,20 +60,22 @@ jobs:
           path: nebula_core
           ssh-key: ${{ secrets.SSH_KEY_CORE }}
 
-      # ШАГ 3: ЖЕСТКИЙ ФИКС САБМОДУЛЕЙ
-      - name: Force Update Submodules
+      # ШАГ 3: ЖЕСТКИЙ ФИКС САБМОДУЛЕЙ (МЫ ИХ ПРОСТО КЛОНИРУЕМ)
+      - name: Force Clone Dependencies
+        shell: bash
         run: |
           cd nebula_core
-          # Инициализируем сабмодули без попытки сразу их скачать (чтобы не упасть на битом рефе)
-          git submodule init
+          # Чистим забагованные сабмодули
+          rm -rf vcpkg external/sqlcipher
           
-          # Для vcpkg берем мастер
-          git submodule update --remote vcpkg
+          # Качаем vcpkg напрямую (свежий мастер)
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git vcpkg
           
-          # Для остальных (sqlcipher, tdlib) тоже берем последние версии веток, 
-          # прописанных в .gitmodules, игнорируя "замороженные" коммиты
-          git submodule update --init --recursive --remote
-        shell: bash
+          # Качаем sqlcipher напрямую (чтобы CMake увидел sqlite3.c)
+          mkdir -p external/sqlcipher
+          git clone --depth 1 https://github.com/sqlcipher/sqlcipher.git external/sqlcipher
+          
+          echo "Dependencies cloned manually. Submodule hell bypassed."
 
       - name: Bootstrap vcpkg
         shell: bash
