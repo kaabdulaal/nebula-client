@@ -5,8 +5,6 @@
 
 Nebula is a decentralized, end-to-end encrypted (E2EE) cloud storage solution that leverages Telegram as a secure infrastructure. It transforms your Telegram account into a private, zero-knowledge vault for files and media.
 
-<<<<<<< HEAD
-=======
 ## ⚠️ WARNING: EARLY BETA SOFTWARE ⚠️
 
 - **This application is currently in a Closed Beta testing phase.** > Do NOT use Nebula as the sole storage for important data. Bugs, sync conflicts, or architectural changes may result in permanent data loss. Use it at your own risk for testing and evaluation purposes only.
@@ -21,7 +19,6 @@ Nebula is a decentralized, end-to-end encrypted (E2EE) cloud storage solution th
 
     - **Linux**: Download the nebula-linux-v0.1.0-alpha.tar.gz, extract it, and run the nebula_client binary.
       
->>>>>>> origin/main
 ## Key Features
 
 - **Zero-Knowledge Architecture**: Encryption happens exclusively on your device. Only you hold the keys to your data.
@@ -57,8 +54,6 @@ Nebula is a decentralized, end-to-end encrypted (E2EE) cloud storage solution th
    flutter run
    ```
 
-<<<<<<< HEAD
-=======
 ### 🪟 Windows
 
 - **Building on Windows requires specific C++ environments and DLL management to avoid memory heap collisions.**
@@ -74,7 +69,6 @@ Nebula is a decentralized, end-to-end encrypted (E2EE) cloud storage solution th
 
 - **Note**: Always run the Windows client in --release mode (flutter run -d windows --release) to prevent MSVC CRT (Debug/Release) mismatch crashes when parsing JSON.
 
->>>>>>> origin/main
 ## Architecture Overview
 
 - **State Management**: Uses **Riverpod** for predictable, reactive state handling and dependency injection.
