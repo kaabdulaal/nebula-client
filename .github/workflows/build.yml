@@ -1,6 +1,6 @@
 name: Nebula Production Build
 on:
-  workflow_dispatch: # Запуск вручную по кнопке в Actions
+  workflow_dispatch:
 
 jobs:
   build:
@@ -13,26 +13,18 @@ jobs:
           - os: ubuntu-22.04
             target: linux-android
             cmd: |
-              # 0. Подтягиваем зависимости Flutter (обязательно для плагинов)
               cd $GITHUB_WORKSPACE/nebula_client
               flutter pub get
-
-              # 1. Сборка зависимостей ядра для Linux
               cd $GITHUB_WORKSPACE/nebula_core
               ./vcpkg/vcpkg install --allow-unsupported
-
-              # 2. Упаковка Linux (deb, appimage)
               cd $GITHUB_WORKSPACE/nebula_client
               dart pub global activate flutter_distributor
               export PATH="$PATH":"$HOME/.pub-cache/bin"
               flutter_distributor package --platform linux --targets deb,appimage
-
-              # 3. Сборка Android
               cd $GITHUB_WORKSPACE/nebula_core
               export VCPKG_DEFAULT_TRIPLET=arm64-android
               export VCPKG_DEFAULT_HOST_TRIPLET=x64-linux
               ./vcpkg/vcpkg install --triplet=arm64-android --allow-unsupported
-
               cd $GITHUB_WORKSPACE/nebula_client
               flutter build apk --release --target-platform android-arm64
             artifact_path: |
@@ -48,13 +40,11 @@ jobs:
             artifact_path: nebula_client/build/windows/x64/runner/Release/
 
     steps:
-      # 1. Клонируем Клиент
       - name: Checkout Client
         uses: actions/checkout@v4
         with:
           path: nebula_client
 
-      # 2. Клонируем Ядро (с SSH ключом)
       - name: Checkout Core
         uses: actions/checkout@v4
         with:
@@ -62,16 +52,21 @@ jobs:
           path: nebula_core
           ssh-key: ${{ secrets.SSH_KEY_CORE }}
 
-      # 3. Выкачиваем ВСЕ сабмодули ядра (ИСКЛЮЧАЕТ ОШИБКУ SQLCIPHER И TDLIB)
-      - name: Update ALL Submodules
+      # ШАГ 3: ЖЕСТКИЙ ФИКС САБМОДУЛЕЙ
+      - name: Force Update Submodules
         run: |
           cd nebula_core
-          # Сначала берем свежий vcpkg (как было раньше)
-          git submodule update --init --remote vcpkg
-          # Затем выкачиваем все остальные сабмодули (sqlcipher, tdlib)
-          git submodule update --init --recursive
+          # Инициализируем сабмодули без попытки сразу их скачать (чтобы не упасть на битом рефе)
+          git submodule init
+          
+          # Для vcpkg берем мастер
+          git submodule update --remote vcpkg
+          
+          # Для остальных (sqlcipher, tdlib) тоже берем последние версии веток, 
+          # прописанных в .gitmodules, игнорируя "замороженные" коммиты
+          git submodule update --init --recursive --remote
+        shell: bash
 
-      # 4. Бутстрап vcpkg
       - name: Bootstrap vcpkg
         shell: bash
         run: |
@@ -83,21 +78,18 @@ jobs:
           fi
           echo "VCPKG_ROOT=$(pwd)" >> $GITHUB_ENV
 
-      # 5. Настройка Java 17 (фикс для Android SDK Manager)
       - name: Setup Java JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      # 6. Настройка Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
           cache: true
 
-      # 7. Зависимости для Linux и Android сборки
       - name: Install Linux Build Tools
         if: matrix.os == 'ubuntu-22.04'
         run: |
@@ -106,14 +98,12 @@ jobs:
             libgtk-3-dev liblzma-dev libsecret-1-dev \
             m4 autoconf automake libtool nasm libfuse2 libsqlcipher-dev
 
-      # 8. Настройка Android SDK
       - name: Setup Android SDK
         if: matrix.target == 'linux-android'
         uses: android-actions/setup-android@v3
         with:
           packages: "ndk;26.1.10909125"
 
-      # 8.5 Восстанавливаем НАСТОЯЩИЙ secrets.h из GitHub Secrets
       - name: Restore real secrets.h
         shell: bash
         env:
@@ -121,16 +111,14 @@ jobs:
         run: |
           mkdir -p nebula_core/include/nebula/core
           echo "$SECRETS_CONTENT" > nebula_core/include/nebula/core/secrets.h
-          echo "Настоящий secrets.h успешно восстановлен!"
+          echo "Secrets restored."
 
-      # 9. Сборка (Выполнение cmd из матрицы)
       - name: Execute Build Command
         shell: bash
         run: |
           git config --global --add safe.directory '*'
           ${{ matrix.cmd }}
 
-      # 10. Загрузка готовых файлов (Artifacts)
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
