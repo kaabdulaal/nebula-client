@@ -180,6 +180,8 @@ jobs:
 
       - name: Build Flutter Linux App
         shell: bash
+        env:
+          CARTRIDGE: ${{ secrets.FACTORY_CARTRIDGE }}
         run: |
           export LIBRARY_PATH="$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib:$LIBRARY_PATH"
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib:$LD_LIBRARY_PATH"
@@ -187,8 +189,16 @@ jobs:
 
           cd $GITHUB_WORKSPACE/nebula_client
           export CXXFLAGS="-Wno-unknown-warning-option"
-          flutter build linux --release \
-            --dart-define=NEBULA_FACTORY_CARTRIDGE="${{ secrets.FACTORY_CARTRIDGE }}"
+
+          DART_DEFINES=""
+          if [ -n "$CARTRIDGE" ]; then
+            echo "✅ FACTORY_CARTRIDGE secret found (${#CARTRIDGE} chars)"
+            DART_DEFINES="--dart-define=NEBULA_FACTORY_CARTRIDGE=$CARTRIDGE"
+          else
+            echo "⚠️ FACTORY_CARTRIDGE secret is empty — app will rely on Gist fetch"
+          fi
+
+          flutter build linux --release $DART_DEFINES
 
           echo "=== POST-BUILD: Verify bundle contents ==="
           echo "--- libnebula_core.so ---"
