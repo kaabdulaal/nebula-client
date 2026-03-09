@@ -1,123 +1,58 @@
-name: Nebula Production Build
-on:
-  workflow_dispatch:
+# 1. Сборка ядра
+cd $GITHUB_WORKSPACE/nebula_core
+$VCPKG_ROOT/vcpkg install --allow-unsupported
+mkdir -p build && cd build
+cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
 
-jobs:
-  build:
-    name: Build ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            target: linux-android
-            cmd: |
-              # 0. Flutter pub get
-              cd $GITHUB_WORKSPACE/nebula_client
-              flutter pub get
+# 2. Сборка Flutter
+cd $GITHUB_WORKSPACE/nebula_client
+flutter pub get
+export CXXFLAGS="-Wno-unknown-warning-option"
+flutter build linux --release
 
-              # 1. Сборка зависимостей ядра (VCPKG)
-              cd $GITHUB_WORKSPACE/nebula_core
-              $VCPKG_ROOT/vcpkg install --allow-unsupported
+# --- ВОТ ТУТ МАГИЯ ДЛЯ TDLIB ---
+# Копируем либу телеги прямо в bundle, чтобы она попала в DEB и AppImage
+cp $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.so build/linux/x64/release/bundle/lib/ || true
 
-              # 2. Сборка самого ядра (теперь все файлы в main!)
-              mkdir -p build && cd build
-              cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
-              make -j$(nproc)
+# 3. РУЧНАЯ УПАКОВКА В DEB
+mkdir -p dist/debian/usr/bin
+mkdir -p dist/debian/DEBIAN
+cp -r build/linux/x64/release/bundle/* dist/debian/usr/bin/
 
-              # 3. Упаковка Linux (deb, appimage)
-              cd $GITHUB_WORKSPACE/nebula_client
-              dart pub global activate flutter_distributor
-              export PATH="$PATH":"$HOME/.pub-cache/bin"
-              export CXXFLAGS="-Wno-unknown-warning-option"
-              flutter_distributor package --platform linux --targets deb,appimage
+cat <<EOF > dist/debian/DEBIAN/control
+Package: nebula-client
+Version: 0.1.0
+Architecture: amd64
+Maintainer: nebula-project
+Description: Nebula Desktop Client with Telegram Support
+EOF
 
-              # 4. Сборка Android (APK)
-              cd $GITHUB_WORKSPACE/nebula_core
-              export VCPKG_DEFAULT_TRIPLET=arm64-android
-              export VCPKG_DEFAULT_HOST_TRIPLET=x64-linux
-              $VCPKG_ROOT/vcpkg install --triplet=arm64-android --allow-unsupported
+dpkg-deb --build dist/debian nebula-client.deb
 
-              cd $GITHUB_WORKSPACE/nebula_client
-              flutter build apk --release --target-platform android-arm64
-            artifact_path: |
-              nebula_client/dist/
-              nebula_client/build/app/outputs/flutter-apk/app-release.apk
+# 4. РУЧНАЯ УПАКОВКА В APPIMAGE
+curl -L https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage -o appimagetool
+chmod +x appimagetool
 
-          - os: windows-latest
-            target: windows
-            cmd: |
-              cd $GITHUB_WORKSPACE/nebula_client
-              flutter pub get
-              flutter build windows --release
-            artifact_path: nebula_client/build/windows/x64/runner/Release/
+mkdir -p dist/AppDir
+cp -r build/linux/x64/release/bundle/* dist/AppDir/
 
-    steps:
-      - name: Checkout Client
-        uses: actions/checkout@v4
-        with:
-          path: nebula_client
+# Для AppImage ОЧЕНЬ важен рабочий .desktop файл, иначе он не запустится
+cat <<EOF > dist/AppDir/nebula.desktop
+[Desktop Entry]
+Name=Nebula
+Exec=nebula_client
+Icon=nebula
+Type=Application
+Categories=Utility;
+EOF
+touch dist/AppDir/nebula.png # Заглушка под иконку
 
-      - name: Checkout Core
-        uses: actions/checkout@v4
-        with:
-          repository: kaabdulaal/nebula-core
-          path: nebula_core
-          ssh-key: ${{ secrets.SSH_KEY_CORE }}
+ARCH=x86_64 ./appimagetool dist/AppDir nebula-client.AppImage || true
 
-      # Клонируем vcpkg в корень (чтобы избежать конфликтов с сабмодулями внутри ядра)
-      - name: Setup VCPKG
-        shell: bash
-        run: |
-          rm -rf $GITHUB_WORKSPACE/vcpkg
-          git clone https://github.com/microsoft/vcpkg.git $GITHUB_WORKSPACE/vcpkg
-          cd $GITHUB_WORKSPACE/vcpkg
-          ./bootstrap-vcpkg.sh
-          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> $GITHUB_ENV
-
-      - name: Setup Java JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-          cache: true
-
-      - name: Install Linux Build Tools
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config \
-            libgtk-3-dev liblzma-dev libsecret-1-dev \
-            m4 autoconf automake libtool nasm libfuse2 libsqlcipher-dev
-
-      - name: Install Android NDK
-        if: matrix.target == 'linux-android'
-        run: |
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
-
-      - name: Restore secrets.h
-        shell: bash
-        env:
-          SECRETS_CONTENT: ${{ secrets.REAL_SECRETS_H }}
-        run: |
-          mkdir -p nebula_core/include/nebula/core
-          echo "$SECRETS_CONTENT" > nebula_core/include/nebula/core/secrets.h
-
-      - name: Execute Build Command
-        shell: bash
-        run: |
-          git config --global --add safe.directory '*'
-          ${{ matrix.cmd }}
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nebula-${{ matrix.target }}
-          path: ${{ matrix.artifact_path }}
+# 5. Сборка Android
+cd $GITHUB_WORKSPACE/nebula_core
+# Ставим зависимости для Android через vcpkg
+$VCPKG_ROOT/vcpkg install --triplet=arm64-android --allow-unsupported
+cd $GITHUB_WORKSPACE/nebula_client
+flutter build apk --release --target-platform android-arm64
