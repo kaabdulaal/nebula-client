@@ -19,23 +19,6 @@ jobs:
           path: nebula_core
           ssh-key: ${{ secrets.SSH_KEY_CORE }}
 
-      - name: Purge Corrupt TDLib & Download Official Release
-        shell: bash
-        run: |
-          echo "Cleaning up corrupt local TDLib binaries..."
-          rm -rf $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.so*
-          
-          echo "Downloading official TDLib 1.8.0 pre-built binaries for Ubuntu..."
-          mkdir -p tdlib_download && cd tdlib_download
-          curl -L https://github.com/tdlib/td/releases/download/v1.8.0/tdlib.zip -o tdlib.zip
-          unzip tdlib.zip
-          
-          mkdir -p $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib
-          cp lib/libtdjson.so.1.8.61 $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/
-          
-          cd $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib
-          ln -sf libtdjson.so.1.8.61 libtdjson.so
-
       - name: Setup VCPKG
         shell: bash
         run: |
@@ -80,6 +63,11 @@ jobs:
 
           # --- 1. Сборка ядра Linux ---
           cd $GITHUB_WORKSPACE/nebula_core
+          # Делаем симлинк для тупого линковщика прям из твоих исходников
+          cd external/tdlib/lib
+          cp libtdjson.so libtdjson.so.1.8.61 || true
+          cd $GITHUB_WORKSPACE/nebula_core
+          
           $VCPKG_ROOT/vcpkg install --allow-unsupported
           mkdir -p build && cd build
           cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release -DTDLIB_ROOT=$GITHUB_WORKSPACE/nebula_core/external/tdlib
@@ -94,7 +82,6 @@ jobs:
           cd $GITHUB_WORKSPACE/nebula_client
           flutter pub get
           export CXXFLAGS="-Wno-unknown-warning-option"
-          
           flutter build linux --release
 
           cp $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.so* build/linux/x64/release/bundle/lib/ || true
@@ -112,7 +99,8 @@ jobs:
           EOF
           dpkg-deb --build dist/debian nebula-client.deb
 
-          curl -L https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage -o appimagetool
+          # ФИКС: Правильная ссылка на appimagetool
+          curl -L https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -o appimagetool
           chmod +x appimagetool
           mkdir -p dist/AppDir
           cp -r build/linux/x64/release/bundle/* dist/AppDir/
@@ -132,9 +120,13 @@ jobs:
           $VCPKG_ROOT/vcpkg install --triplet=arm64-android --allow-unsupported
 
           cd $GITHUB_WORKSPACE/nebula_client
-          # ФИКС: Обрабатываем и старый Gradle, и новый Kotlin DSL
-          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle || true
-          sed -i 's/minSdkVersion = flutter.minSdkVersion/minSdkVersion = 24/g' android/app/build.gradle.kts || true
+          # ФИКС ANDROID: Безопасная замена, которая не крашит скрипт
+          if [ -f android/app/build.gradle ]; then
+            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle
+          fi
+          if [ -f android/app/build.gradle.kts ]; then
+            sed -i 's/minSdkVersion = flutter.minSdkVersion/minSdkVersion = 24/g' android/app/build.gradle.kts
+          fi
           
           flutter build apk --release --target-platform android-arm64
 
@@ -187,13 +179,12 @@ jobs:
         shell: bash
         run: |
           cd $GITHUB_WORKSPACE/nebula_core
+          
+          # ФИКС WINDOWS: Засовываем sqlite3.h прямо в папку, которую MSVC уже видит
+          cp external/sqlcipher/sqlite3.h include/nebula/core/
+          
           $VCPKG_ROOT/vcpkg install --triplet=x64-windows
           mkdir build && cd build
-          
-          # ФИКС WINDOWS: Насильно указываем MSVC где лежит sqlite3.h
-          export CXXFLAGS="-I$GITHUB_WORKSPACE/nebula_core/external/sqlcipher"
-          export CFLAGS="-I$GITHUB_WORKSPACE/nebula_core/external/sqlcipher"
-          
           cmake .. -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DCMAKE_BUILD_TYPE=Release -DTDLIB_ROOT="$GITHUB_WORKSPACE/nebula_core/external/tdlib"
           cmake --build . --config Release --target nebula_core
 
@@ -206,16 +197,4 @@ jobs:
 
       - name: Copy TDLib (Windows)
         shell: bash
-        run: |
-          if [ -f "$GITHUB_WORKSPACE/nebula_core/external/tdlib/bin/libtdjson.dll" ]; then
-            cp "$GITHUB_WORKSPACE/nebula_core/external/tdlib/bin/libtdjson.dll" $GITHUB_WORKSPACE/nebula_client/build/windows/x64/runner/Release/ || true
-          fi
-          if [ -f "$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.dll" ]; then
-            cp "$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.dll" $GITHUB_WORKSPACE/nebula_client/build/windows/x64/runner/Release/ || true
-          fi
-
-      - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nebula-windows
-          path: nebula_client/build/windows/x64/runner/Release/
+        run:
