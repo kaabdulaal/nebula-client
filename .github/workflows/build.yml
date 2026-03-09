@@ -19,12 +19,29 @@ jobs:
           path: nebula_core
           ssh-key: ${{ secrets.SSH_KEY_CORE }}
 
+      - name: Cache VCPKG
+        id: cache-vcpkg
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/vcpkg
+            !${{ github.workspace }}/vcpkg/.git
+            ${{ github.workspace }}/nebula_core/vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('nebula_core/vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-
+
       - name: Setup VCPKG
         shell: bash
         run: |
-          rm -rf $GITHUB_WORKSPACE/vcpkg
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git $GITHUB_WORKSPACE/vcpkg
-          $GITHUB_WORKSPACE/vcpkg/bootstrap-vcpkg.sh
+          if [ ! -f "$GITHUB_WORKSPACE/vcpkg/vcpkg" ]; then
+            echo "Cache MISS or stale — cloning vcpkg (full history for baseline resolution)..."
+            rm -rf $GITHUB_WORKSPACE/vcpkg
+            git clone https://github.com/microsoft/vcpkg.git $GITHUB_WORKSPACE/vcpkg
+            $GITHUB_WORKSPACE/vcpkg/bootstrap-vcpkg.sh
+          else
+            echo "✅ vcpkg restored from cache"
+          fi
           echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> $GITHUB_ENV
 
       - name: Setup Flutter
@@ -95,7 +112,23 @@ jobs:
         run: |
           git config --global --add safe.directory '*'
           cd $GITHUB_WORKSPACE/nebula_core
-          $VCPKG_ROOT/vcpkg install --allow-unsupported
+
+          # Try manifest-based install first; fall back to explicit packages
+          if ! $VCPKG_ROOT/vcpkg install --allow-unsupported 2>&1; then
+            echo "⚠️ Manifest install failed. Falling back to explicit packages..."
+            $VCPKG_ROOT/vcpkg install jsoncpp openssl --allow-unsupported
+          fi
+
+      - name: Verify VCPKG dependencies
+        shell: bash
+        run: |
+          echo "=== VCPKG installed packages ==="
+          $VCPKG_ROOT/vcpkg list
+          echo ""
+          echo "=== Checking critical libs ==="
+          find $GITHUB_WORKSPACE/nebula_core/vcpkg_installed -name "libjsoncpp*" 2>/dev/null | head -3
+          find $GITHUB_WORKSPACE/nebula_core/vcpkg_installed -name "libssl*" -o -name "libcrypto*" 2>/dev/null | head -3
+          echo "✅ VCPKG verification complete"
 
       - name: Verify build inputs
         shell: bash
