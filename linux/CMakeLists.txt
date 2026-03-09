@@ -1,6 +1,10 @@
-set(CMAKE_MAKE_PROGRAM /usr/bin/ninja)
-set(CMAKE_C_COMPILER /usr/bin/clang)
-set(CMAKE_CXX_COMPILER /usr/bin/clang++)
+# Apply hardcoded compiler paths ONLY if inside NixOS environment
+if(DEFINED ENV{IN_NIX_SHELL})
+    set(CMAKE_MAKE_PROGRAM /usr/bin/ninja)
+    set(CMAKE_C_COMPILER /usr/bin/clang)
+    set(CMAKE_CXX_COMPILER /usr/bin/clang++)
+endif()
+
 # Project-level configuration.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 cmake_minimum_required(VERSION 3.13)
@@ -97,8 +101,6 @@ function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_options(${TARGET} PRIVATE -Wall -Werror)
   # Suppress nlohmann/json deprecated literal operator warning (flutter_secure_storage_linux)
   target_compile_options(${TARGET} PRIVATE -Wno-deprecated-literal-operator)
-  # Force GLIBC 2.42 for symbols like __inet_pton_chk required by libgcrypt/libgpg-error
-  # This path matches our Nix environment's glibc 2.42 store path.
   target_compile_options(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-O3>")
   target_compile_definitions(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:NDEBUG>")
 endfunction()
@@ -174,7 +176,7 @@ if(EXISTS "${NEBULA_STABLE_LIB_PATH}")
 
   # Bundle dependencies from the same directory (e.g. vcpkg or nix-built libs)
   get_filename_component(NEBULA_CORE_LIB_DIR "${NEBULA_STABLE_LIB_PATH}" DIRECTORY)
-  
+
   # Also check the build output directory in case they aren't synced to stable yet
   get_filename_component(NEBULA_CORE_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../nebula_core/build/lib" ABSOLUTE)
 
