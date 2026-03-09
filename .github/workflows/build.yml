@@ -134,12 +134,17 @@ jobs:
             -DTDLIB_ROOT=$GITHUB_WORKSPACE/nebula_core/external/tdlib
           make nebula_core -j$(nproc)
 
-          echo "=== Copying libnebula_core.so to expected path ==="
-          mkdir -p $GITHUB_WORKSPACE/nebula_core/linux
-          cp $GITHUB_WORKSPACE/nebula_core/build/libnebula_core.so $GITHUB_WORKSPACE/nebula_core/linux/libnebula_core.so
+          # CMake POST_BUILD should have already copied the .so to nebula_core/linux/
+          # If not, find it and copy manually
+          DEST="$GITHUB_WORKSPACE/nebula_core/linux"
+          mkdir -p "$DEST"
+          if [ ! -f "$DEST/libnebula_core.so" ]; then
+            echo "POST_BUILD copy didn't fire. Finding .so manually..."
+            find "$GITHUB_WORKSPACE/nebula_core/build" -name "libnebula_core.so" -exec cp {} "$DEST/libnebula_core.so" \;
+          fi
 
           echo "--- Verify .so at expected path ---"
-          ls -la $GITHUB_WORKSPACE/nebula_core/linux/libnebula_core.so \
+          ls -la "$DEST/libnebula_core.so" \
             && echo "✅ libnebula_core.so ready for Flutter" \
             || { echo "❌ FATAL: libnebula_core.so not produced"; exit 1; }
 
