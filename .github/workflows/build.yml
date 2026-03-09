@@ -3,85 +3,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            target: linux-android
-            cmd: |
-              # 1. Сборка ядра
-              cd $GITHUB_WORKSPACE/nebula_core
-              $VCPKG_ROOT/vcpkg install --allow-unsupported
-              mkdir -p build && cd build
-              cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release -DTDLIB_ROOT=$GITHUB_WORKSPACE/nebula_core/external/tdlib
-              make -j$(nproc)
-
-              # 2. Сборка Flutter Linux
-              cd $GITHUB_WORKSPACE/nebula_client
-              flutter pub get
-              export CXXFLAGS="-Wno-unknown-warning-option"
-              flutter build linux --release
-
-              # --- МАГИЯ TDLIB ---
-              # Подкладываем либу телеги прямо в собранное приложение
-              cp $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.so build/linux/x64/release/bundle/lib/ || true
-
-              # 3. РУЧНАЯ УПАКОВКА В DEB
-              mkdir -p dist/debian/usr/bin
-              mkdir -p dist/debian/DEBIAN
-              cp -r build/linux/x64/release/bundle/* dist/debian/usr/bin/
-
-              cat <<EOF > dist/debian/DEBIAN/control
-              Package: nebula-client
-              Version: 1.0.0
-              Architecture: amd64
-              Maintainer: nebula-project
-              Description: Nebula Desktop Client with Telegram Support
-              EOF
-
-              dpkg-deb --build dist/debian nebula-client.deb
-
-              # 4. РУЧНАЯ УПАКОВКА В APPIMAGE
-              curl -L https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage -o appimagetool
-              chmod +x appimagetool
-
-              mkdir -p dist/AppDir
-              cp -r build/linux/x64/release/bundle/* dist/AppDir/
-
-              cat <<EOF > dist/AppDir/nebula.desktop
-              [Desktop Entry]
-              Name=Nebula
-              Exec=nebula_client
-              Icon=nebula
-              Type=Application
-              Categories=Utility;
-              EOF
-              touch dist/AppDir/nebula.png
-
-              ARCH=x86_64 ./appimagetool dist/AppDir nebula-client.AppImage || true
-
-              # 5. Сборка Android
-              cd $GITHUB_WORKSPACE/nebula_core
-              $VCPKG_ROOT/vcpkg install --triplet=arm64-android --allow-unsupported
-              cd $GITHUB_WORKSPACE/nebula_client
-              flutter build apk --release --target-platform android-arm64
-            artifact_path: |
-              nebula_client/*.deb
-              nebula_client/*.AppImage
-              nebula_client/build/app/outputs/flutter-apk/app-release.apk
-
-          - os: windows-latest
-            target: windows
-            cmd: |
-              cd $GITHUB_WORKSPACE/nebula_client
-              flutter pub get
-              flutter build windows --release
-            artifact_path: nebula_client/build/windows/x64/runner/Release/
-
+  build_linux_android:
+    name: Build Linux & Android
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout Client
         uses: actions/checkout@v4
@@ -100,9 +24,20 @@ jobs:
         run: |
           rm -rf $GITHUB_WORKSPACE/vcpkg
           git clone https://github.com/microsoft/vcpkg.git $GITHUB_WORKSPACE/vcpkg
-          cd $GITHUB_WORKSPACE/vcpkg
-          ./bootstrap-vcpkg.sh
+          $GITHUB_WORKSPACE/vcpkg/bootstrap-vcpkg.sh
           echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> $GITHUB_ENV
+
+      - name: Hack VCPKG for Android API 21
+        shell: bash
+        run: |
+          # УБИВАЕМ ОШИБКУ __write_chk: Жестко прописываем API 21 в триплет!
+          cat <<EOF > $GITHUB_WORKSPACE/vcpkg/triplets/arm64-android.cmake
+          set(VCPKG_TARGET_ARCHITECTURE arm64)
+          set(VCPKG_CRT_LINKAGE dynamic)
+          set(VCPKG_LIBRARY_LINKAGE static)
+          set(VCPKG_CMAKE_SYSTEM_NAME Android)
+          set(ANDROID_PLATFORM android-21)
+          EOF
 
       - name: Setup Java JDK 17
         uses: actions/setup-java@v4
@@ -114,18 +49,13 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          cache: true
 
       - name: Install Linux Build Tools
-        if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config \
-            libgtk-3-dev liblzma-dev libsecret-1-dev \
-            m4 autoconf automake libtool nasm libfuse2 libsqlcipher-dev
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev m4 autoconf automake libtool nasm libfuse2 libsqlcipher-dev
 
       - name: Install Android NDK
-        if: matrix.target == 'linux-android'
         run: |
           echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
@@ -138,14 +68,138 @@ jobs:
           mkdir -p nebula_core/include/nebula/core
           echo "$SECRETS_CONTENT" > nebula_core/include/nebula/core/secrets.h
 
-      - name: Execute Build Command
+      - name: Execute Full Build (Linux & Android)
         shell: bash
         run: |
           git config --global --add safe.directory '*'
-          ${{ matrix.cmd }}
+          
+          # --- 1. Сборка ядра Linux ---
+          cd $GITHUB_WORKSPACE/nebula_core
+          $VCPKG_ROOT/vcpkg install --allow-unsupported
+          mkdir -p build && cd build
+          cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release -DTDLIB_ROOT=$GITHUB_WORKSPACE/nebula_core/external/tdlib
+          make -j$(nproc)
 
-      - name: Upload Artifacts
+          # --- 2. Сборка Flutter Linux ---
+          cd $GITHUB_WORKSPACE/nebula_client
+          flutter pub get
+          export CXXFLAGS="-Wno-unknown-warning-option"
+          flutter build linux --release
+
+          # Копируем либу телеги (которую ты запушил) в бандл
+          cp $GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.so build/linux/x64/release/bundle/lib/ || true
+
+          # --- 3. Упаковка DEB и AppImage ---
+          mkdir -p dist/debian/usr/bin
+          mkdir -p dist/debian/DEBIAN
+          cp -r build/linux/x64/release/bundle/* dist/debian/usr/bin/
+          cat <<EOF > dist/debian/DEBIAN/control
+          Package: nebula-client
+          Version: 1.0.0
+          Architecture: amd64
+          Maintainer: nebula-project
+          Description: Nebula Desktop Client with Telegram Support
+          EOF
+          dpkg-deb --build dist/debian nebula-client.deb
+
+          curl -L https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage -o appimagetool
+          chmod +x appimagetool
+          mkdir -p dist/AppDir
+          cp -r build/linux/x64/release/bundle/* dist/AppDir/
+          cat <<EOF > dist/AppDir/nebula.desktop
+          [Desktop Entry]
+          Name=Nebula
+          Exec=nebula_client
+          Icon=nebula
+          Type=Application
+          Categories=Utility;
+          EOF
+          touch dist/AppDir/nebula.png
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run dist/AppDir nebula-client.AppImage || true
+
+          # --- 4. Сборка Android ---
+          cd $GITHUB_WORKSPACE/nebula_core
+          # no-binarycaching заставит его пересобрать OpenSSL под API 21!
+          export VCPKG_DEFAULT_TRIPLET=arm64-android
+          $VCPKG_ROOT/vcpkg install --triplet=arm64-android --allow-unsupported --no-binarycaching
+          
+          cd $GITHUB_WORKSPACE/nebula_client
+          flutter build apk --release --target-platform android-arm64
+
+      - name: Upload Linux & Android Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nebula-${{ matrix.target }}
-          path: ${{ matrix.artifact_path }}
+          name: nebula-linux-android
+          path: |
+            nebula_client/*.deb
+            nebula_client/*.AppImage
+            nebula_client/build/app/outputs/flutter-apk/app-release.apk
+
+  build_windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Client
+        uses: actions/checkout@v4
+        with:
+          path: nebula_client
+
+      - name: Checkout Core
+        uses: actions/checkout@v4
+        with:
+          repository: kaabdulaal/nebula-core
+          path: nebula_core
+          ssh-key: ${{ secrets.SSH_KEY_CORE }}
+
+      - name: Restore secrets.h
+        shell: bash
+        env:
+          SECRETS_CONTENT: ${{ secrets.REAL_SECRETS_H }}
+        run: |
+          mkdir -p nebula_core/include/nebula/core
+          echo "$SECRETS_CONTENT" > nebula_core/include/nebula/core/secrets.h
+
+      - name: Setup VCPKG
+        shell: bash
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git $GITHUB_WORKSPACE/vcpkg
+          $GITHUB_WORKSPACE/vcpkg/bootstrap-vcpkg.bat
+          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> $GITHUB_ENV
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Build Core (Windows)
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/nebula_core
+          $VCPKG_ROOT/vcpkg install --triplet=x64-windows
+          mkdir build && cd build
+          cmake .. -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DCMAKE_BUILD_TYPE=Release -DTDLIB_ROOT="$GITHUB_WORKSPACE/nebula_core/external/tdlib"
+          cmake --build . --config Release
+
+      - name: Build Flutter (Windows)
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/nebula_client
+          flutter pub get
+          flutter build windows --release
+
+      - name: Copy TDLib (Windows)
+        shell: bash
+        run: |
+          # Ищем dll телеги и кидаем ее к exe файлу, чтобы на винде все работало
+          if [ -f "$GITHUB_WORKSPACE/nebula_core/external/tdlib/bin/libtdjson.dll" ]; then
+            cp "$GITHUB_WORKSPACE/nebula_core/external/tdlib/bin/libtdjson.dll" $GITHUB_WORKSPACE/nebula_client/build/windows/x64/runner/Release/ || true
+          fi
+          if [ -f "$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.dll" ]; then
+            cp "$GITHUB_WORKSPACE/nebula_core/external/tdlib/lib/libtdjson.dll" $GITHUB_WORKSPACE/nebula_client/build/windows/x64/runner/Release/ || true
+          fi
+
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nebula-windows
+          path: nebula_client/build/windows/x64/runner/Release/
