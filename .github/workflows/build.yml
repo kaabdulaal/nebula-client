@@ -30,6 +30,7 @@ jobs:
               cd $GITHUB_WORKSPACE/nebula_client
               dart pub global activate flutter_distributor
               export PATH="$PATH":"$HOME/.pub-cache/bin"
+              export CXXFLAGS="-Wno-unknown-warning-option"
               flutter_distributor package --platform linux --targets deb,appimage
 
               # 4. Сборка Android (APK)
