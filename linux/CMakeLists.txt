@@ -1,9 +1,6 @@
-# Apply hardcoded compiler paths ONLY if inside NixOS environment
-if(DEFINED ENV{IN_NIX_SHELL})
-    set(CMAKE_MAKE_PROGRAM /usr/bin/ninja)
-    set(CMAKE_C_COMPILER /usr/bin/clang)
-    set(CMAKE_CXX_COMPILER /usr/bin/clang++)
-endif()
+# NixOS: cmake finds ninja/clang from PATH automatically via nix dev shell.
+# No hardcoded paths needed.
+
 
 # Project-level configuration.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
@@ -33,29 +30,8 @@ else()
     message(WARNING "Vcpkg toolchain not found. Build may fail if dependencies are missing.")
 endif()
 
-# Fix for NixOS: Bypass pkg-config wrapper to allow vcpkg to work
-if(DEFINED ENV{IN_NIX_SHELL})
-    find_program(PKG_CONFIG_EXECUTABLE pkg-config)
-    if(PKG_CONFIG_EXECUTABLE)
-        # Check if it's a shell script (wrapper)
-        file(READ "${PKG_CONFIG_EXECUTABLE}" PKG_CONFIG_CONTENT LIMIT 20)
-        if(PKG_CONFIG_CONTENT MATCHES "^#!")
-            # It's a script, try to extract the real binary path
-            # We assume the wrapper execs the real binary
-            execute_process(
-                COMMAND head -n1
-                OUTPUT_VARIABLE REAL_PKG_CONFIG
-                OUTPUT_STRIP_TRAILING_WHITESPACE
-            )
-            if(REAL_PKG_CONFIG)
-                set(ENV{PKG_CONFIG} "${REAL_PKG_CONFIG}")
-                message(STATUS "NixOS detected: Setting PKG_CONFIG to unwrapped binary: ${REAL_PKG_CONFIG}")
-            else()
-                message(WARNING "NixOS detected: Could not find unwrapped pkg-config in wrapper.")
-            endif()
-        endif()
-    endif()
-endif()
+
+
 
 project(runner LANGUAGES CXX)
 
