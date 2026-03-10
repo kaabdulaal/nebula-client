@@ -76,7 +76,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: nebula_core/external/tdlib
-          key: tdlib-v1.8.0-ubuntu-22.04
+          key: tdlib-master-2026-03-ubuntu-22.04
 
       - name: Build TDLib from Source
         if: steps.cache-tdlib.outputs.cache-hit != 'true'
@@ -85,7 +85,7 @@ jobs:
           echo "Cache MISS — building TDLib from source (this takes ~20 min)..."
           cd $GITHUB_WORKSPACE/nebula_core
           rm -rf external/tdlib/lib/*
-          git clone --depth 1 -b v1.8.0 https://github.com/tdlib/td.git external/tdlib_src
+          git clone --depth 1 https://github.com/tdlib/td.git external/tdlib_src
           mkdir -p external/tdlib_src/build && cd external/tdlib_src/build
           cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX:PATH=$GITHUB_WORKSPACE/nebula_core/external/tdlib ..
           cmake --build . --target install -j2
