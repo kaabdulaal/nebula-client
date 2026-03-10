@@ -190,15 +190,15 @@ jobs:
           cd $GITHUB_WORKSPACE/nebula_client
           export CXXFLAGS="-Wno-unknown-warning-option"
 
-          DART_DEFINES=""
           if [ -n "$CARTRIDGE" ]; then
             echo "✅ FACTORY_CARTRIDGE secret found (${#CARTRIDGE} chars)"
-            DART_DEFINES="--dart-define=NEBULA_FACTORY_CARTRIDGE=$CARTRIDGE"
+            echo "{\"NEBULA_FACTORY_CARTRIDGE\":\"$CARTRIDGE\"}" > /tmp/dart_defines.json
+            flutter build linux --release --dart-define-from-file=/tmp/dart_defines.json
+            rm -f /tmp/dart_defines.json
           else
             echo "⚠️ FACTORY_CARTRIDGE secret is empty — app will rely on Gist fetch"
+            flutter build linux --release
           fi
-
-          flutter build linux --release $DART_DEFINES
 
           echo "=== POST-BUILD: Verify bundle contents ==="
           echo "--- libnebula_core.so ---"
